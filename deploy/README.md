@@ -28,13 +28,18 @@ DB接続情報などは `.env` または実行環境のシークレット管理�
 
 ## Git / GitHub
 
-URLは `https://github.com/owner/repo.git`、パターンは `locales/{locale}.json` の形式です。現状はGitHub HTTPSのみで、SSH・任意ホスト・submoduleは未対応です。Git操作・接続設定・PR作成には管理者権限が必要です。パストラバーサルと翻訳パスのシンボリックリンクを拒否し、Gitフックとグローバル設定を無効化しています。
+Git 連携はプロジェクト単位の「リポジトリ」で設定します。URLは `https://github.com/owner/repo`（`.git` の有無は問いません）、追跡ブランチは既定で `main` です。現状はGitHub HTTPSのみで、SSH・任意ホスト・submoduleは未対応です。リポジトリの接続・clone/pull/push・PR作成には管理者権限、checkoutからの同期（Sync）と翻訳ファイル検出にはプロジェクトのmanager権限が必要です。checkoutは `REPOSITORY_ROOT/<リポジトリID>` に置かれます。パストラバーサルと翻訳パスのシンボリックリンクを拒否し、Gitフックとグローバル設定を無効化しています。
 
-`GITHUB_TOKEN` には対象リポジトリで必要なContents / Pull requests権限を付与してください。UIでClone → Gitからインポート → 翻訳 → Commit → Pushの順に操作します。PRを作るにはコンポーネントを既存の翻訳専用ブランチに設定し、異なるマージ先ブランチを指定します。APIはドラフトPRを作ります。[GitHub PR API](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)
+`GITHUB_TOKEN` には対象リポジトリで必要なContents / Pull requests権限を付与してください。UIでの手順は次のとおりです。
 
-WebhookのPayload URLは `https://公開ホスト/webhooks/github`、Content typeはJSON、イベントはpushです。`GITHUB_WEBHOOK_SECRET` と同じ32文字以上のランダム値をGitHubへ設定します。署名を検証し、登録済みURL・ブランチに一致したイベントだけをDBキューへ保存します。Delivery IDで重複を排除します。[署名検証](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+1. プロジェクト画面でリポジトリを接続し、リポジトリ画面で **Clone** します。
+2. **Detect translation files** で checkout 内の翻訳ファイルを検出します。`dir/{locale}.ext`、`dir/{locale}/file.ext`、`values-{locale}/strings.xml` の配置を認識し、候補からコンポーネントを作成できます。未登録のロケールは先にロケール管理で追加してください。既存コンポーネントは設定画面でリポジトリとファイルパターンを紐付けられます。
+3. **Sync from checkout** で、リポジトリに紐付く全コンポーネントの原文と対象ロケール（プロジェクトの対象ロケールに存在するファイルのみ）を取り込みます。
+4. 翻訳後、**Open draft pull request** を押すと、pull → `konnyaku/translations-<UTC時刻>` ブランチ作成 → 全対象ロケールをエクスポート → commit → push → 追跡ブランチ向けのドラフトPR作成を行い、checkoutは追跡ブランチへ戻ります。変更が無い場合はエラーで止まります。追跡ブランチへ直接 commit / push する操作も用意しています。[GitHub PR API](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)
 
-ワーカーはclone/pull後に原文だけを取り込み、UI編集中の対象言語は変更しません。失敗時は管理画面で状態を確認し、競合や接続設定を直して再試行します。ジョブ処理中はDB行ロックを保持し、クラッシュ時のロールバックでpending状態へ戻ります。複数コンポーネントを含むイベントは途中まで成功する場合があります。
+WebhookのPayload URLは `https://公開ホスト/webhooks/github`、Content typeはJSON、イベントはpushです。`GITHUB_WEBHOOK_SECRET` と同じ32文字以上のランダム値をGitHubへ設定します。署名を検証し、登録済みリポジトリURL・追跡ブランチに一致したイベントだけをDBキューへ保存します。Delivery IDで重複を排除します。[署名検証](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+
+ワーカーはclone/pull後に、そのリポジトリに紐付く全コンポーネントでSyncと同じ取り込みを行います。対象ロケールのファイルも取り込まれるため、UIで編集中の翻訳がリポジトリ側の値で上書きされることがあります。翻訳の変更はすべて履歴に残るので、上書きされた値は履歴パネルから確認できます。失敗時は管理画面（Webhooks）で状態を確認し、競合や接続設定を直して再試行します。ジョブ処理中はDB行ロックを保持し、クラッシュ時のロールバックでpending状態へ戻ります。複数コンポーネントを含むイベントは途中まで成功する場合があります。
 
 ## 機械翻訳
 
@@ -51,8 +56,9 @@ Googleは `GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION`（既定値global）�
 - 取込は全体をトランザクションで処理しますが、対象言語の再取込はUI編集を上書きします。原文から消えたキーは自動削除しません。
 - 対象言語の取込文書をエクスポートのテンプレートに使うため、後から原文に追加されたキーとの完全な同期は未実装です。
 - ユーザー無効化・パスワード変更/リセット・招待・SSO・監査ログは未実装です。
-- Gitのブランチ作成・非同期ジョブ化・競合解決UI・GitHub App認証は未実装です。
+- Git操作は同期APIです。非同期ジョブ化・競合解決UI・GitHub App認証は未実装です。
+- Androidで原文が `values/strings.xml` にある配置（対象は `values-{locale}/`）と、`en_US.json` のようにロケール表記が正規形（`en-US`）と異なるファイル名は未対応です。
 - 機械翻訳の予算制御・再試行・用語集・翻訳メモリ・プレースホルダー検査は未実装です。
-- 大規模カタログ向けDB検索・進捗集計、複数台運用、本番サービス・プロキシでの検証は残作業です。
+- 複数台運用、本番サービス・プロキシでの検証は残作業です。
 
 認証・権限・競合・形式変換のテストは開発用です。本番公開前に、この制限を運用要件と照合してください。
