@@ -24,6 +24,17 @@ type Document struct {
 	Content     []byte `json:"content"`
 }
 
+type GlossaryTerm struct {
+	ID          int64              `json:"id"`
+	ProjectID   int64              `json:"project_id"`
+	Locale      string             `json:"locale"`
+	Term        string             `json:"term"`
+	Translation string             `json:"translation"`
+	Note        string             `json:"note"`
+	UpdatedBy   pgtype.Int8        `json:"updated_by"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Locale struct {
 	Code string `json:"code"`
 	Name string `json:"name"`

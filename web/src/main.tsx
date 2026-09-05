@@ -5,6 +5,7 @@ import "./style.css";
 import { App } from "./App";
 import { ProjectsPage } from "./pages/Projects";
 import { ProjectPage } from "./pages/Project";
+import { GlossaryPage } from "./pages/Glossary";
 import { ComponentPage } from "./pages/Component";
 import { RepositoryPage } from "./pages/Repository";
 import { LocalesPage } from "./pages/Locales";
@@ -17,6 +18,7 @@ render(
       <Route path="/" component={ProjectsPage} />
       <Route path="/projects" component={ProjectsPage} />
       <Route path="/projects/:id" component={ProjectPage} />
+      <Route path="/projects/:id/glossary" component={GlossaryPage} />
       <Route path="/components/:id" component={ComponentPage} />
       <Route path="/repositories/:id" component={RepositoryPage} />
       <Route path="/locales" component={LocalesPage} />

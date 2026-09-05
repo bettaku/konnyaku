@@ -149,3 +149,22 @@ UPDATE webhook_deliveries SET status=$2,error=$3 WHERE delivery_id=$1;
 SELECT * FROM webhook_deliveries ORDER BY received_at DESC LIMIT 100;
 -- name: RetryDelivery :execrows
 UPDATE webhook_deliveries SET status='pending',error='' WHERE delivery_id=$1 AND status='failed';
+
+-- name: TranslationMemory :many
+SELECT DISTINCT ON (u.source, t.value) u.source, t.value, t.status, c.name AS component_name, p.name AS project_name,
+ similarity(u.source, sqlc.arg(source))::real AS score
+FROM units u JOIN translations t ON t.unit_id=u.id AND t.locale=sqlc.arg(locale)
+JOIN components c ON c.id=u.component_id JOIN projects p ON p.id=c.project_id
+WHERE u.id <> sqlc.arg(unit_id) AND t.value <> '' AND (u.source = sqlc.arg(source) OR u.source % sqlc.arg(source))
+ AND (sqlc.arg(is_admin)::boolean OR EXISTS (SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=sqlc.arg(user_id)))
+ORDER BY u.source, t.value, t.status DESC LIMIT 50;
+-- name: ListGlossary :many
+SELECT g.*, coalesce(u.name,'')::text AS updated_by_name FROM glossary_terms g LEFT JOIN users u ON u.id=g.updated_by
+WHERE g.project_id=$1 AND (sqlc.arg(locale)::text = '' OR g.locale=sqlc.arg(locale)) ORDER BY lower(g.term), g.locale;
+-- name: SaveGlossaryTerm :one
+INSERT INTO glossary_terms (project_id,locale,term,translation,note,updated_by) VALUES ($1,$2,$3,$4,$5,$6)
+ON CONFLICT (project_id,locale,lower(term)) DO UPDATE SET term=excluded.term,translation=excluded.translation,note=excluded.note,updated_by=excluded.updated_by,updated_at=now() RETURNING *;
+-- name: DeleteGlossaryTerm :execrows
+DELETE FROM glossary_terms WHERE id=$1 AND project_id=$2;
+-- name: GlossaryMatches :many
+SELECT * FROM glossary_terms WHERE project_id=$1 AND locale=$2 AND position(lower(term) IN lower(sqlc.arg(source))) > 0 ORDER BY length(term) DESC, term;

@@ -273,6 +273,44 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("project detail: %s", raw)
 	}
 
+	// Glossary and translation memory.
+	trans.must(200, "POST", ppath+"/glossary", map[string]string{"locale": "ja", "term": "File", "translation": "ファイル", "note": "menu label"})
+	trans.must(400, "POST", ppath+"/glossary", map[string]string{"locale": "en", "term": "File", "translation": "x"})
+	trans.must(400, "POST", ppath+"/glossary", map[string]string{"locale": "ja", "term": "", "translation": "x"})
+	g := admin.must(200, "POST", ppath+"/glossary", map[string]string{"locale": "ja", "term": "file", "translation": "ファイル（上書き）"})
+	_, raw = trans.do("GET", ppath+"/glossary?locale=ja", nil, nil)
+	if strings.Count(string(raw), `"term"`) != 1 || !strings.Contains(string(raw), "上書き") {
+		t.Fatalf("glossary upsert should be case-insensitive: %s", raw)
+	}
+	co2 := admin.must(201, "POST", ppath+"/components", map[string]string{"slug": "docs", "name": "Docs", "format": "json"})
+	c2path := "/api/components/" + itoa(int64(co2["id"].(float64)))
+	admin.must(200, "POST", c2path+"/import?locale=en", []byte(`{"open":"Open file","other":"Something unrelated"}`))
+	_, raw = trans.do("GET", c2path+"/units?locale=ja", nil, nil)
+	_ = json.Unmarshal(raw, &page)
+	var openID int64
+	for _, x := range page.Units {
+		if x.Key == "/open" {
+			openID = x.ID
+		}
+	}
+	_, raw = trans.do("GET", "/api/units/"+itoa(openID)+"/assist?locale=ja", nil, nil)
+	var assist struct {
+		Memory []struct {
+			Source, Value string
+			Score         float64
+		}
+		Glossary []struct{ Term, Translation string }
+	}
+	if err := json.Unmarshal(raw, &assist); err != nil || len(assist.Glossary) != 1 || assist.Glossary[0].Translation != "ファイル（上書き）" {
+		t.Fatalf("assist glossary: %s %v", raw, err)
+	}
+	if len(assist.Memory) != 1 || assist.Memory[0].Source != "File" || assist.Memory[0].Value != "ファイル" || assist.Memory[0].Score <= 0 {
+		t.Fatalf("assist memory: %s", raw)
+	}
+	trans.must(403, "DELETE", ppath+"/glossary/"+itoa(int64(g["id"].(float64))), nil)
+	admin.must(204, "DELETE", ppath+"/glossary/"+itoa(int64(g["id"].(float64))), nil)
+	admin.must(404, "DELETE", ppath+"/glossary/"+itoa(int64(g["id"].(float64))), nil)
+
 	// Suggestions fail cleanly when providers are unconfigured.
 	trans.must(502, "POST", "/api/units/"+itoa(u.ID)+"/suggest", map[string]string{"provider": "openai", "locale": "ja"})
 	trans.must(400, "POST", "/api/units/"+itoa(u.ID)+"/suggest", map[string]string{"provider": "nope", "locale": "ja"})

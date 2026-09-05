@@ -41,6 +41,9 @@ export type HistoryEntry = {
   changed_by_name: string;
 };
 export type ActivityEntry = HistoryEntry & { unit_id: number; key: string; locale: string; component_id?: number; component_name?: string };
+export type MemoryMatch = { source: string; value: string; status: Status; component_name: string; project_name: string; score: number };
+export type GlossaryTerm = { id: number; project_id: number; locale: string; term: string; translation: string; note: string; updated_by: number | null; updated_at: string; updated_by_name?: string };
+export type Assist = { memory: MemoryMatch[]; glossary: GlossaryTerm[] };
 export type Delivery = { delivery_id: string; received_at: string; repository_url: string; ref: string; status: string; error: string };
 
 let onUnauthorized: (() => void) | null = null;
@@ -115,6 +118,11 @@ export const api = {
   importFile: (id: number, locale: string, file: File) =>
     request<{ imported: number }>("POST", `/components/${id}/import?locale=${enc(locale)}`, file, true),
   exportUrl: (id: number, locale: string) => `/api/components/${id}/export?locale=${enc(locale)}`,
+  assist: (id: number, locale: string) => request<Assist>("GET", `/units/${id}/assist?locale=${enc(locale)}`),
+  glossary: (project: number, locale?: string) => request<GlossaryTerm[]>("GET", `/projects/${project}/glossary${locale ? `?locale=${enc(locale)}` : ""}`),
+  saveGlossaryTerm: (project: number, t: { locale: string; term: string; translation: string; note: string }) =>
+    request<GlossaryTerm>("POST", `/projects/${project}/glossary`, t),
+  deleteGlossaryTerm: (project: number, id: number) => request<void>("DELETE", `/projects/${project}/glossary/${id}`),
   unitHistory: (id: number, locale: string) => request<HistoryEntry[]>("GET", `/units/${id}/history?locale=${enc(locale)}`),
   saveTranslation: (id: number, locale: string, t: { value: string; status: Status; version: number }) =>
     request<Translation>("PUT", `/units/${id}/translations/${enc(locale)}`, t),

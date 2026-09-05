@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createResource, createSignal, on } from "solid-js";
 import { A, useNavigate, useParams, useSearchParams } from "@solidjs/router";
-import { api, fmtTime, type Status, type Unit } from "../api";
+import { api, fmtTime, type GlossaryTerm, type HistoryEntry, type Status, type Unit } from "../api";
+import { diffWords } from "../diff";
 import { useAction, useSession } from "../session";
 import { Badge, Crumbs, Empty, LocaleSelect, Progress, formData } from "../ui";
 
@@ -11,12 +12,13 @@ const STATUSES: Array<{ value: string; label: string }> = [
   { value: "translated", label: "Translated" },
   { value: "reviewed", label: "Reviewed" },
 ];
+type Insert = { unitId: number; value: string; seq: number };
 
 export function ComponentPage() {
   const params = useParams();
   const id = () => Number(params.id);
   const [search, setSearch] = useSearchParams<{ locale?: string; q?: string; status?: string; offset?: string }>();
-  const { user, locales, notify } = useSession();
+  const { notify } = useSession();
   const run = useAction();
   const navigate = useNavigate();
   const [detail, { refetch: refetchDetail }] = createResource(id, api.component);
@@ -40,9 +42,12 @@ export function ComponentPage() {
     () => (locale() ? { id: id(), locale: locale(), q: query(), status: status(), offset: offset() } : null),
     (p) => api.units(p.id, p),
   );
+  const [glossaryAll] = createResource(() => (detail() && locale() && !isSource() ? { p: detail()!.project.id, l: locale() } : null), (p) => api.glossary(p.p, p.l));
   const [selected, setSelected] = createSignal<Unit | null>(null);
-  const [history] = createResource(() => (selected() ? { u: selected()!.id, l: locale() } : null), (p) => api.unitHistory(p.u, p.l));
+  const [history, { refetch: refetchHistory }] = createResource(() => (selected() ? { u: selected()!.id, l: locale() } : null), (p) => api.unitHistory(p.u, p.l));
+  const [assist] = createResource(() => (selected() ? { u: selected()!.id, l: locale() } : null), (p) => api.assist(p.u, p.l));
   const [activity, { refetch: refetchActivity }] = createResource(() => (locale() ? { id: id(), l: locale() } : null), (p) => api.componentHistory(p.id, p.l));
+  const [insert, setInsert] = createSignal<Insert | null>(null);
   createEffect(on(locale, () => setSelected(null)));
 
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -55,10 +60,27 @@ export function ComponentPage() {
   const statFor = (code: string) => stats()?.find((s) => s.locale === code);
 
   const saved = (u: Unit, value: string, st: Status, version: number) => {
-    mutate((p) => p && { ...p, units: p.units.map((x) => (x.id === u.id ? { ...x, value, status: st, version, updated_at: new Date().toISOString() } : x)) });
+    const updated = { ...u, value, status: st, version, updated_at: new Date().toISOString() };
+    mutate((p) => p && { ...p, units: p.units.map((x) => (x.id === u.id ? updated : x)) });
     refetchStats();
     refetchActivity();
-    if (selected()?.id === u.id) setSelected({ ...u, value, status: st, version });
+    if (selected()?.id === u.id) {
+      setSelected(updated);
+      refetchHistory();
+    }
+  };
+  const useValue = (value: string) => {
+    const u = selected();
+    if (u) setInsert({ unitId: u.id, value, seq: (insert()?.seq ?? 0) + 1 });
+  };
+  const restore = async (h: HistoryEntry) => {
+    const u = selected();
+    if (!u) return;
+    const st: Status = h.status === "reviewed" && !canReview() ? "translated" : h.status === "untranslated" ? "translated" : h.status;
+    await run(async () => {
+      const r = await api.saveTranslation(u.id, locale(), { value: h.value, status: st, version: u.version });
+      saved(u, r.value, r.status, r.version);
+    }, `Restored v${h.version}`);
   };
   const importFile = async (e: SubmitEvent) => {
     const { form } = formData(e);
@@ -93,6 +115,7 @@ export function ComponentPage() {
             <h1 class="m0">{d().component.name}</h1>
             <span class="badge">{d().component.format}</span>
             <Show when={d().component.repository_id}>{(rid) => <A class="small" href={`/repositories/${rid()}`}>repository</A>}</Show>
+            <A class="small" href={`/projects/${d().project.id}/glossary${isSource() ? "" : `?locale=${encodeURIComponent(locale())}`}`}>glossary</A>
             <span class="grow" />
             <a class="small" href={api.exportUrl(id(), locale())}>Export {locale()}</a>
             <Show when={manage()}><button class="ghost small" onClick={() => setEditing(!editing())}>Settings</button></Show>
@@ -157,6 +180,7 @@ export function ComponentPage() {
                       <For each={p().units}>
                         {(u) => (
                           <UnitCard unit={u} locale={locale()} source={isSource()} editable={canEdit()} reviewer={canReview()}
+                            glossary={glossaryAll() ?? []} insert={insert()}
                             selected={selected()?.id === u.id} onSelect={() => setSelected(selected()?.id === u.id ? null : u)} onSaved={saved} />
                         )}
                       </For>
@@ -176,7 +200,7 @@ export function ComponentPage() {
               <Show when={selected()} fallback={
                 <div class="panel">
                   <h3>Recent changes · {locale()}</h3>
-                  <Show when={activity()?.length} fallback={<p class="muted small">No changes yet. Select a unit to see its history.</p>}>
+                  <Show when={activity()?.length} fallback={<p class="muted small">No changes yet. Select a unit to see glossary hits, translation memory and history.</p>}>
                     <ul class="history list">
                       <For each={activity()?.slice(0, 20)}>
                         {(h) => (
@@ -192,20 +216,69 @@ export function ComponentPage() {
                 </div>
               }>
                 {(u) => (
-                  <div class="panel">
-                    <div class="row center"><h3 class="grow m0">History</h3><button class="ghost small" onClick={() => setSelected(null)}>×</button></div>
-                    <code class="small">{u().key}</code>
+                  <div class="panel assist">
+                    <div class="row center"><code class="grow small">{u().key}</code><button class="ghost small" onClick={() => setSelected(null)}>×</button></div>
+                    <h4>Glossary</h4>
+                    <Show when={assist()} fallback={<p class="muted small">Loading…</p>}>
+                      {(a) => (
+                        <>
+                          <Show when={a().glossary.length} fallback={<p class="muted small">No glossary terms in this string.</p>}>
+                            <For each={a().glossary}>
+                              {(g) => (
+                                <div class="match">
+                                  <div><strong>{g.term}</strong> → {g.translation}
+                                    <Show when={u().value}>{" "}<span class={u().value.includes(g.translation) ? "term-ok" : "term-missing"} title={u().value.includes(g.translation) ? "translation contains the term" : "translation does not contain the glossary wording"}>{u().value.includes(g.translation) ? "✓" : "⚠"}</span></Show>
+                                  </div>
+                                  <Show when={g.note}><div class="meta">{g.note}</div></Show>
+                                  <Show when={canEdit()}><div class="meta"><button class="ghost small" onClick={() => useValue(g.translation)}>Insert</button></div></Show>
+                                </div>
+                              )}
+                            </For>
+                          </Show>
+                          <h4>Translation memory</h4>
+                          <Show when={a().memory.length} fallback={<p class="muted small">No similar strings translated into {locale()} yet.</p>}>
+                            <For each={a().memory}>
+                              {(m) => (
+                                <div class="match">
+                                  <div class="src"><Show when={m.source !== u().source} fallback={<span class="muted">exact match</span>}><span class="diff"><For each={diffWords(u().source, m.source)}>{(p) => p.type === "eq" ? p.text : p.type === "add" ? <ins>{p.text}</ins> : <del>{p.text}</del>}</For></span></Show></div>
+                                  <div class="val">{m.value}</div>
+                                  <div class="meta">
+                                    <span class="score">{Math.round(m.score * 100)}%</span>
+                                    <Badge status={m.status} />
+                                    <span>{m.project_name} / {m.component_name}</span>
+                                    <Show when={canEdit()}><button class="ghost small" onClick={() => useValue(m.value)}>Use</button></Show>
+                                  </div>
+                                </div>
+                              )}
+                            </For>
+                          </Show>
+                        </>
+                      )}
+                    </Show>
+                    <h4>History</h4>
                     <Show when={history()} fallback={<p class="muted small">Loading…</p>}>
                       {(hs) => (
                         <Show when={hs().length} fallback={<p class="muted small">No history for this locale yet.</p>}>
-                          <ul class="history list mt">
+                          <ul class="history list">
                             <For each={hs()}>
-                              {(h) => (
-                                <li>
-                                  <div class="meta">v{h.version} · {fmtTime(h.changed_at)} · {h.changed_by_name || "system"} · <Badge status={h.status} /></div>
-                                  <div class="value">{h.value || <span class="muted">(empty)</span>}</div>
-                                </li>
-                              )}
+                              {(h, i) => {
+                                const previous = () => hs()[i() + 1]?.value ?? "";
+                                const current = () => h.version === u().version && h.value === u().value;
+                                return (
+                                  <li>
+                                    <div class="meta">
+                                      v{h.version} · {fmtTime(h.changed_at)} · {h.changed_by_name || "system"} · <Badge status={h.status} />
+                                      <Show when={current()}> · <span class="term-ok">current</span></Show>
+                                      <Show when={!current() && canEdit()}> · <button class="ghost small" onClick={() => restore(h)} title="Save this version as the current translation">Restore</button></Show>
+                                    </div>
+                                    <div class="value diff">
+                                      <Show when={i() < hs().length - 1} fallback={h.value || <span class="muted">(empty)</span>}>
+                                        <For each={diffWords(previous(), h.value)}>{(p) => p.type === "eq" ? p.text : p.type === "add" ? <ins>{p.text}</ins> : <del>{p.text}</del>}</For>
+                                      </Show>
+                                    </div>
+                                  </li>
+                                );
+                              }}
                             </For>
                           </ul>
                         </Show>
@@ -222,16 +295,47 @@ export function ComponentPage() {
   );
 }
 
+/** Splits a source string into text and highlighted glossary terms (longest terms win). */
+function highlight(source: string, terms: GlossaryTerm[]): Array<{ text: string; term?: GlossaryTerm }> {
+  if (!terms.length) return [{ text: source }];
+  const lower = source.toLowerCase();
+  const sorted = [...terms].sort((a, b) => b.term.length - a.term.length);
+  const out: Array<{ text: string; term?: GlossaryTerm }> = [];
+  let pos = 0;
+  while (pos < source.length) {
+    let best: { at: number; term: GlossaryTerm } | null = null;
+    for (const t of sorted) {
+      const at = lower.indexOf(t.term.toLowerCase(), pos);
+      if (at >= 0 && (!best || at < best.at)) best = { at, term: t };
+    }
+    if (!best) break;
+    if (best.at > pos) out.push({ text: source.slice(pos, best.at) });
+    out.push({ text: source.slice(best.at, best.at + best.term.term.length), term: best.term });
+    pos = best.at + best.term.term.length;
+  }
+  if (pos < source.length) out.push({ text: source.slice(pos) });
+  return out;
+}
+
 function UnitCard(props: {
   unit: Unit; locale: string; source: boolean; editable: boolean; reviewer: boolean; selected: boolean;
+  glossary: GlossaryTerm[]; insert: Insert | null;
   onSelect: () => void; onSaved: (u: Unit, value: string, status: Status, version: number) => void;
 }) {
-  const { notify, user } = useSession();
+  const { notify } = useSession();
   const [value, setValue] = createSignal(props.unit.value);
   const [status, setStatus] = createSignal<Status>(props.unit.status === "untranslated" ? "translated" : props.unit.status);
   const [busy, setBusy] = createSignal(false);
+  let textarea: HTMLTextAreaElement | undefined;
   createEffect(on(() => props.unit, (u) => { setValue(u.value); setStatus(u.status === "untranslated" ? "translated" : u.status); }));
+  createEffect(on(() => props.insert, (ins) => {
+    if (ins && ins.unitId === props.unit.id) {
+      setValue(ins.value);
+      textarea?.focus();
+    }
+  }, { defer: true }));
   const dirty = () => value() !== props.unit.value || (props.unit.status !== "untranslated" && status() !== props.unit.status);
+  const parts = createMemo(() => highlight(props.unit.source, props.source ? [] : props.glossary));
   const save = async () => {
     if (busy()) return;
     setBusy(true);
@@ -257,7 +361,6 @@ function UnitCard(props: {
       setBusy(false);
     }
   };
-  void user;
   return (
     <div class={"unit" + (props.selected ? " selected" : "") + (dirty() ? " dirty" : "")}>
       <div class="head">
@@ -265,12 +368,15 @@ function UnitCard(props: {
         <Badge status={props.unit.status} />
         <Show when={props.unit.updated_at}><span class="muted small">{fmtTime(props.unit.updated_at)}</span></Show>
         <span class="grow" />
-        <Show when={!props.source}><button class="ghost small" onClick={props.onSelect}>{props.selected ? "Hide history" : "History"}</button></Show>
+        <Show when={!props.source}><button class="ghost small" onClick={props.onSelect}>{props.selected ? "Hide details" : "Details"}</button></Show>
       </div>
-      <div class="source">{props.unit.source}</div>
+      <div class="source">
+        <For each={parts()}>{(p) => p.term ? <mark class="term" title={`${p.term.term} → ${p.term.translation}${p.term.note ? ` (${p.term.note})` : ""}`}>{p.text}</mark> : p.text}</For>
+      </div>
       <Show when={!props.source} fallback={<div class="muted small">source string</div>}>
         <div>
-          <textarea value={value()} disabled={!props.editable} onInput={(e) => setValue(e.currentTarget.value)}
+          <textarea ref={textarea} value={value()} disabled={!props.editable} onInput={(e) => setValue(e.currentTarget.value)}
+            onFocus={() => { if (!props.selected) props.onSelect(); }}
             onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); save(); } }} />
           <Show when={props.editable}>
             <div class="actions">

@@ -75,6 +75,7 @@ export function ProjectPage() {
             <h1 class="m0">{d().project.name}</h1>
             <span class="badge">source {d().project.source_locale}</span>
             <span class="badge">{d().role}</span>
+            <A class="small" href={`/projects/${id()}/glossary`}>Glossary</A>
             <Show when={manage()}><button class="ghost small" onClick={() => setEditing(!editing())}>Settings</button></Show>
           </div>
           <Show when={editing()}>

@@ -120,3 +120,19 @@ ul.panel.list { padding: .4rem 1rem; }
 .sw-translated { background: var(--accent); }
 .sw-needs { background: var(--warn); }
 .sw-untranslated { background: #e9ecef; }
+
+/* assist panel */
+mark.term { background: #fff3bf; color: inherit; border-radius: 2px; padding: 0 1px; }
+.assist h4 { margin: .8rem 0 .3rem; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+.assist h4:first-child { margin-top: 0; }
+.match { padding: .4rem 0; border-bottom: 1px solid var(--line); }
+.match:last-child { border-bottom: 0; }
+.match .src { white-space: pre-wrap; word-break: break-word; color: var(--muted); font-size: .85rem; }
+.match .val { white-space: pre-wrap; word-break: break-word; }
+.match .meta { display: flex; gap: .5rem; align-items: center; font-size: .78rem; color: var(--muted); margin-top: .15rem; }
+.score { font-variant-numeric: tabular-nums; }
+.term-ok { color: var(--ok); }
+.term-missing { color: var(--warn); }
+.diff del { background: #fdecea; color: var(--danger); text-decoration: line-through; }
+.diff ins { background: #e8f5ee; color: var(--ok); text-decoration: none; }
+.diff { white-space: pre-wrap; word-break: break-word; }

@@ -324,6 +324,23 @@ func (q *Queries) DeleteExpiredSessions(ctx context.Context) error {
 	return err
 }
 
+const deleteGlossaryTerm = `-- name: DeleteGlossaryTerm :execrows
+DELETE FROM glossary_terms WHERE id=$1 AND project_id=$2
+`
+
+type DeleteGlossaryTermParams struct {
+	ID        int64 `json:"id"`
+	ProjectID int64 `json:"project_id"`
+}
+
+func (q *Queries) DeleteGlossaryTerm(ctx context.Context, arg DeleteGlossaryTermParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteGlossaryTerm, arg.ID, arg.ProjectID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteLocale = `-- name: DeleteLocale :execrows
 DELETE FROM locales WHERE code=$1
 `
@@ -557,6 +574,45 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
+const glossaryMatches = `-- name: GlossaryMatches :many
+SELECT id, project_id, locale, term, translation, note, updated_by, updated_at FROM glossary_terms WHERE project_id=$1 AND locale=$2 AND position(lower(term) IN lower($3)) > 0 ORDER BY length(term) DESC, term
+`
+
+type GlossaryMatchesParams struct {
+	ProjectID int64  `json:"project_id"`
+	Locale    string `json:"locale"`
+	Source    string `json:"source"`
+}
+
+func (q *Queries) GlossaryMatches(ctx context.Context, arg GlossaryMatchesParams) ([]GlossaryTerm, error) {
+	rows, err := q.db.Query(ctx, glossaryMatches, arg.ProjectID, arg.Locale, arg.Source)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GlossaryTerm{}
+	for rows.Next() {
+		var i GlossaryTerm
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Locale,
+			&i.Term,
+			&i.Translation,
+			&i.Note,
+			&i.UpdatedBy,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const importTranslation = `-- name: ImportTranslation :exec
 INSERT INTO translations (unit_id,locale,value,updated_by) VALUES ($1,$2,$3,$4)
 ON CONFLICT (unit_id,locale) DO UPDATE SET value=excluded.value,status='translated',version=translations.version+1,updated_by=excluded.updated_by,updated_at=now()
@@ -632,6 +688,58 @@ func (q *Queries) ListDeliveries(ctx context.Context) ([]WebhookDelivery, error)
 			&i.Ref,
 			&i.Status,
 			&i.Error,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGlossary = `-- name: ListGlossary :many
+SELECT g.id, g.project_id, g.locale, g.term, g.translation, g.note, g.updated_by, g.updated_at, coalesce(u.name,'')::text AS updated_by_name FROM glossary_terms g LEFT JOIN users u ON u.id=g.updated_by
+WHERE g.project_id=$1 AND ($2::text = '' OR g.locale=$2) ORDER BY lower(g.term), g.locale
+`
+
+type ListGlossaryParams struct {
+	ProjectID int64  `json:"project_id"`
+	Locale    string `json:"locale"`
+}
+
+type ListGlossaryRow struct {
+	ID            int64              `json:"id"`
+	ProjectID     int64              `json:"project_id"`
+	Locale        string             `json:"locale"`
+	Term          string             `json:"term"`
+	Translation   string             `json:"translation"`
+	Note          string             `json:"note"`
+	UpdatedBy     pgtype.Int8        `json:"updated_by"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	UpdatedByName string             `json:"updated_by_name"`
+}
+
+func (q *Queries) ListGlossary(ctx context.Context, arg ListGlossaryParams) ([]ListGlossaryRow, error) {
+	rows, err := q.db.Query(ctx, listGlossary, arg.ProjectID, arg.Locale)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGlossaryRow{}
+	for rows.Next() {
+		var i ListGlossaryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.Locale,
+			&i.Term,
+			&i.Translation,
+			&i.Note,
+			&i.UpdatedBy,
+			&i.UpdatedAt,
+			&i.UpdatedByName,
 		); err != nil {
 			return nil, err
 		}
@@ -1136,6 +1244,43 @@ func (q *Queries) SaveDocument(ctx context.Context, arg SaveDocumentParams) erro
 	return err
 }
 
+const saveGlossaryTerm = `-- name: SaveGlossaryTerm :one
+INSERT INTO glossary_terms (project_id,locale,term,translation,note,updated_by) VALUES ($1,$2,$3,$4,$5,$6)
+ON CONFLICT (project_id,locale,lower(term)) DO UPDATE SET term=excluded.term,translation=excluded.translation,note=excluded.note,updated_by=excluded.updated_by,updated_at=now() RETURNING id, project_id, locale, term, translation, note, updated_by, updated_at
+`
+
+type SaveGlossaryTermParams struct {
+	ProjectID   int64       `json:"project_id"`
+	Locale      string      `json:"locale"`
+	Term        string      `json:"term"`
+	Translation string      `json:"translation"`
+	Note        string      `json:"note"`
+	UpdatedBy   pgtype.Int8 `json:"updated_by"`
+}
+
+func (q *Queries) SaveGlossaryTerm(ctx context.Context, arg SaveGlossaryTermParams) (GlossaryTerm, error) {
+	row := q.db.QueryRow(ctx, saveGlossaryTerm,
+		arg.ProjectID,
+		arg.Locale,
+		arg.Term,
+		arg.Translation,
+		arg.Note,
+		arg.UpdatedBy,
+	)
+	var i GlossaryTerm
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.Locale,
+		&i.Term,
+		&i.Translation,
+		&i.Note,
+		&i.UpdatedBy,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const saveLocale = `-- name: SaveLocale :one
 INSERT INTO locales (code,name) VALUES ($1,$2) ON CONFLICT (code) DO UPDATE SET name=excluded.name RETURNING code, name
 `
@@ -1225,6 +1370,66 @@ func (q *Queries) SessionUser(ctx context.Context, tokenHash string) (SessionUse
 		&i.Admin,
 	)
 	return i, err
+}
+
+const translationMemory = `-- name: TranslationMemory :many
+SELECT DISTINCT ON (u.source, t.value) u.source, t.value, t.status, c.name AS component_name, p.name AS project_name,
+ similarity(u.source, $1)::real AS score
+FROM units u JOIN translations t ON t.unit_id=u.id AND t.locale=$2
+JOIN components c ON c.id=u.component_id JOIN projects p ON p.id=c.project_id
+WHERE u.id <> $3 AND t.value <> '' AND (u.source = $1 OR u.source % $1)
+ AND ($4::boolean OR EXISTS (SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=$5))
+ORDER BY u.source, t.value, t.status DESC LIMIT 50
+`
+
+type TranslationMemoryParams struct {
+	Source  string `json:"source"`
+	Locale  string `json:"locale"`
+	UnitID  int64  `json:"unit_id"`
+	IsAdmin bool   `json:"is_admin"`
+	UserID  int64  `json:"user_id"`
+}
+
+type TranslationMemoryRow struct {
+	Source        string  `json:"source"`
+	Value         string  `json:"value"`
+	Status        string  `json:"status"`
+	ComponentName string  `json:"component_name"`
+	ProjectName   string  `json:"project_name"`
+	Score         float32 `json:"score"`
+}
+
+func (q *Queries) TranslationMemory(ctx context.Context, arg TranslationMemoryParams) ([]TranslationMemoryRow, error) {
+	rows, err := q.db.Query(ctx, translationMemory,
+		arg.Source,
+		arg.Locale,
+		arg.UnitID,
+		arg.IsAdmin,
+		arg.UserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []TranslationMemoryRow{}
+	for rows.Next() {
+		var i TranslationMemoryRow
+		if err := rows.Scan(
+			&i.Source,
+			&i.Value,
+			&i.Status,
+			&i.ComponentName,
+			&i.ProjectName,
+			&i.Score,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const unitHistory = `-- name: UnitHistory :many
