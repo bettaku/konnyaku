@@ -1,0 +1,43 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspaces/konnyaku:cached
+      # Keep Linux node_modules apart from a host install (native binaries differ).
+      - web-node-modules:/workspaces/konnyaku/web/node_modules
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/home/vscode/.cache/go-build
+    command: sleep infinity
+    environment:
+      DATABASE_URL: postgres://konnyaku:konnyaku-dev@db:5432/konnyaku?sslmode=disable
+      TEST_DATABASE_URL: postgres://konnyaku:konnyaku-dev@db:5432/konnyaku_test?sslmode=disable
+      LISTEN_ADDR: 0.0.0.0:8080
+      PUBLIC_URL: http://localhost:8080
+      REPOSITORY_ROOT: /workspaces/konnyaku/data/repositories
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: admin-password-123
+      ADMIN_NAME: Admin
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: konnyaku
+      POSTGRES_PASSWORD: konnyaku-dev
+      POSTGRES_DB: konnyaku
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U konnyaku -d konnyaku"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  web-node-modules:
+  go-mod-cache:
+  go-build-cache:
+  postgres-data:

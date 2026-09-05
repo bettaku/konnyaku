@@ -40,6 +40,16 @@ Then in the UI: add locales → create a project (source locale) → connect a G
 
 For frontend development run `cd web && pnpm dev` (Vite on :5173, proxies `/api` to the Go server on :8080).
 
+## Dev Container
+
+Open the repository in VS Code and choose **Reopen in Container** (or run `devcontainer up --workspace-folder .`). The container ([.devcontainer](.devcontainer)) ships Go 1.27, Node 24 with pnpm, git and `psql`, plus a PostgreSQL 18 service with the `konnyaku` and `konnyaku_test` databases. After creation it downloads modules, builds the SPA, applies migrations and creates `admin@example.com` / `admin-password-123`; then run `make run` and open http://localhost:8080. `TEST_DATABASE_URL` is preset, so `make test` runs the integration tests too. Node modules live in a container-only volume so a host install with different native binaries does not interfere.  The feature-installed pnpm is pinned to the version in `web/package.json`; if they diverge, pnpm downloads itself into an ignored `.pnpm-store/` at the repository root, so bump both together.
+
+If the `devcontainer` CLI hangs after the containers are up (it can wait forever for a Docker start event with some Docker Desktop versions), stop it and run the setup once by hand:
+
+```bash
+docker exec konnyaku_devcontainer-app-1 bash .devcontainer/post-create.sh
+```
+
 ## Commands
 
 | Command | Purpose |

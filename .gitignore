@@ -38,3 +38,4 @@ go.work.sum
 data/
 web/node_modules/
 web/dist/
+.pnpm-store/
