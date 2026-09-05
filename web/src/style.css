@@ -136,3 +136,6 @@ mark.term { background: #fff3bf; color: inherit; border-radius: 2px; padding: 0 
 .diff del { background: #fdecea; color: var(--danger); text-decoration: line-through; }
 .diff ins { background: #e8f5ee; color: var(--ok); text-decoration: none; }
 .diff { white-space: pre-wrap; word-break: break-word; }
+.ml { margin-left: .4rem; }
+details.issues { border-color: #f0dfa5; background: #fffbf0; }
+details.issues > summary { color: var(--warn); }

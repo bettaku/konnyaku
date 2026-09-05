@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createResource, createSignal, on } from "solid-js";
 import { A, useNavigate, useParams, useSearchParams } from "@solidjs/router";
-import { api, fmtTime, type GlossaryTerm, type HistoryEntry, type Status, type Unit } from "../api";
+import { api, fmtTime, type GlossaryTerm, type HistoryEntry, type ImportIssue, type Status, type Unit } from "../api";
 import { diffWords } from "../diff";
 import { useAction, useSession } from "../session";
 import { Badge, Crumbs, Empty, LocaleSelect, Progress, formData } from "../ui";
@@ -42,6 +42,16 @@ export function ComponentPage() {
     () => (locale() ? { id: id(), locale: locale(), q: query(), status: status(), offset: offset() } : null),
     (p) => api.units(p.id, p),
   );
+  const [issues, { refetch: refetchIssues }] = createResource(id, api.componentIssues);
+  const issuesByLocale = createMemo(() => {
+    const m = new Map<string, ImportIssue[]>();
+    for (const i of issues() ?? []) m.set(i.locale, [...(m.get(i.locale) ?? []), i]);
+    return [...m.entries()];
+  });
+  const dismiss = async (loc: string, key: string) => {
+    if (!key && !confirm(`Dismiss all unknown keys reported for ${loc}? They come back if the file is imported again.`)) return;
+    if (await run(() => api.dismissIssue(id(), loc, key))) refetchIssues();
+  };
   const [glossaryAll] = createResource(() => (detail() && locale() && !isSource() ? { p: detail()!.project.id, l: locale() } : null), (p) => api.glossary(p.p, p.l));
   const [selected, setSelected] = createSignal<Unit | null>(null);
   const [history, { refetch: refetchHistory }] = createResource(() => (selected() ? { u: selected()!.id, l: locale() } : null), (p) => api.unitHistory(p.u, p.l));
@@ -120,9 +130,9 @@ export function ComponentPage() {
     if (!file) return notify("choose a file");
     const ok = await run(async () => {
       const r = await api.importFile(id(), loc, file);
-      notify(`Imported ${r.imported} entries into ${loc}`, true);
+      notify(`Imported ${r.imported} entries into ${loc}${r.unknown ? `; ${r.unknown} key(s) not in the source catalog were skipped` : ""}`, true);
     });
-    if (ok) { form.reset(); refetchDetail(); refetchStats(); refetchUnits(); refetchActivity(); }
+    if (ok) { form.reset(); refetchDetail(); refetchStats(); refetchUnits(); refetchActivity(); refetchIssues(); }
   };
   const [editing, setEditing] = createSignal(false);
   const [repositories] = createResource(() => (editing() && detail() ? detail()!.project.id : null), api.repositories);
@@ -175,6 +185,38 @@ export function ComponentPage() {
             </div>
           </Show>
 
+          <Show when={issues()?.length}>
+            <details class="panel issues" open={manage()}>
+              <summary><span class="term-missing">⚠</span> {issues()!.length} key{issues()!.length === 1 ? "" : "s"} in translation files are missing from the source catalog</summary>
+              <p class="muted small">These entries were skipped on import. Add the keys to the source file (they clear automatically on the next source import), remove them from the translation files, or dismiss them here.</p>
+              <For each={issuesByLocale()}>
+                {([loc, list]) => (
+                  <div class="mt">
+                    <div class="row center"><strong><span class="badge">{loc}</span> {list.length} key{list.length === 1 ? "" : "s"}</strong>
+                      <Show when={manage()}><button class="ghost small" onClick={() => dismiss(loc, "")}>Dismiss all for {loc}</button></Show>
+                    </div>
+                    <div class="table-wrap">
+                      <table>
+                        <thead><tr><th>Key</th><th>Value in file</th><th>Seen</th><th /></tr></thead>
+                        <tbody>
+                          <For each={list}>
+                            {(i) => (
+                              <tr>
+                                <td><code>{i.key}</code></td>
+                                <td class="small">{i.value || <span class="muted">(empty)</span>}</td>
+                                <td class="small muted">{fmtTime(i.seen_at)}</td>
+                                <td class="right"><Show when={manage()}><button class="ghost small" onClick={() => dismiss(loc, i.key)}>Dismiss</button></Show></td>
+                              </tr>
+                            )}
+                          </For>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </For>
+            </details>
+          </Show>
           <div class="tabs" role="tablist">
             <button class={"tab" + (isSource() ? " active" : "")} onClick={() => setLocale(d().project.source_locale)}>
               {d().project.source_locale} <span class="pct">source</span>

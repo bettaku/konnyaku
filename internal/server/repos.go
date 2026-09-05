@@ -129,14 +129,11 @@ func (s *Server) scanRepository(c *echo.Context) error {
 	}
 	var candidates []gitrepo.Candidate
 	err = s.withRepository(c.Request().Context(), r, func(g gitrepo.Repository) error {
-		st, e := g.Status(c.Request().Context())
-		if e != nil {
-			return e
-		}
-		if !st.Exists {
+		if _, e := os.Lstat(g.Dir()); errors.Is(e, os.ErrNotExist) {
 			return errors.New("clone the repository first")
 		}
-		candidates, e = g.Scan(IsLocaleName)
+		var e error
+		candidates, e = g.Scan()
 		return e
 	})
 	if err != nil {
@@ -148,51 +145,97 @@ func (s *Server) scanRepository(c *echo.Context) error {
 	return c.JSON(200, candidates)
 }
 
-// syncRepository imports the source catalog and every configured target locale
-// for each component attached to the repository. Missing target files are skipped.
-func (s *Server) syncRepository(ctx context.Context, r db.Repository, g gitrepo.Repository, uid int64) (map[string]int, error) {
+// SyncResult reports what a repository synchronization did, per file.
+type SyncResult struct {
+	Files   []SyncFile `json:"files"`
+	Ignored []string   `json:"ignored"` // files whose name is not a locale (index.json, ja-KS.yml)
+	Errors  []string   `json:"errors"`
+}
+type SyncFile struct {
+	Component string `json:"component"`
+	Locale    string `json:"locale"`
+	Path      string `json:"path"`
+	ImportResult
+}
+
+func (r *SyncResult) failed() bool { return len(r.Errors) > 0 }
+
+// syncRepository imports every locale file the checkout holds for each attached
+// component: the source catalog first (falling back to a language-only or
+// default file), then all other locale files. Locales found in the repository
+// are registered automatically so a freshly cloned project starts with its
+// existing translations instead of at 0%. Problems are collected per file and
+// never stop the remaining files from being imported.
+func (s *Server) syncRepository(ctx context.Context, r db.Repository, g gitrepo.Repository, uid int64) (*SyncResult, error) {
+	res := &SyncResult{Files: []SyncFile{}, Ignored: []string{}, Errors: []string{}}
 	p, err := s.Q.GetProject(ctx, r.ProjectID)
 	if err != nil {
-		return nil, err
-	}
-	targets, err := s.Q.ProjectLocales(ctx, r.ProjectID)
-	if err != nil {
-		return nil, err
+		return res, err
 	}
 	components, err := s.Q.RepositoryComponents(ctx, pgInt8(r.ID))
 	if err != nil {
-		return nil, err
+		return res, err
 	}
-	imported := map[string]int{}
+	if len(components) == 0 {
+		res.Errors = append(res.Errors, "no components use this repository yet")
+	}
 	for _, co := range components {
-		raw, err := g.Read(strings.ReplaceAll(co.FilePattern, "{locale}", p.SourceLocale))
+		files, err := g.LocaleFiles(co.FilePattern)
 		if err != nil {
-			return imported, errors.New(co.Slug + ": source file missing: " + strings.ReplaceAll(co.FilePattern, "{locale}", p.SourceLocale))
+			res.Errors = append(res.Errors, co.Slug+": "+err.Error())
+			continue
 		}
-		n, err := s.Import(ctx, co, p.SourceLocale, raw, uid)
-		if err != nil {
-			return imported, errors.New(co.Slug + " (" + p.SourceLocale + "): " + err.Error())
-		}
-		imported[co.Slug+"/"+p.SourceLocale] = n
-		for _, t := range targets {
-			raw, err = g.Read(strings.ReplaceAll(co.FilePattern, "{locale}", t.Code))
-			if errors.Is(err, os.ErrNotExist) {
-				continue
+		importFile := func(f *gitrepo.LocaleFile, locale string) bool {
+			raw, err := g.Read(f.Path)
+			var ir ImportResult
+			if err == nil {
+				ir, err = s.Import(ctx, co, locale, raw, uid)
 			}
 			if err != nil {
-				return imported, errors.New(co.Slug + " (" + t.Code + "): " + err.Error())
+				res.Errors = append(res.Errors, f.Path+": "+errorMessage(err))
+				return false
 			}
-			if n, err = s.Import(ctx, co, t.Code, raw, uid); err != nil {
-				return imported, errors.New(co.Slug + " (" + t.Code + "): " + err.Error())
+			res.Files = append(res.Files, SyncFile{Component: co.Slug, Locale: locale, Path: f.Path, ImportResult: ir})
+			return true
+		}
+		src := gitrepo.FindLocaleFile(files, p.SourceLocale)
+		if src == nil {
+			res.Errors = append(res.Errors, co.Slug+": no source file for "+p.SourceLocale+" matching "+co.FilePattern)
+			continue
+		}
+		if !importFile(src, p.SourceLocale) {
+			continue
+		}
+		for i := range files {
+			f := &files[i]
+			if !f.Recognized() {
+				res.Ignored = append(res.Ignored, f.Path)
+				continue
 			}
-			imported[co.Slug+"/"+t.Code] = n
+			if f.Default || f.Path == src.Path || f.Code == p.SourceLocale {
+				continue
+			}
+			_, name, _ := gitrepo.ParseLocaleName(f.Raw)
+			if err = s.Q.EnsureLocale(ctx, db.EnsureLocaleParams{Code: f.Code, Name: name}); err != nil {
+				return res, err
+			}
+			importFile(f, f.Code)
 		}
 	}
-	return imported, nil
+	return res, nil
+}
+
+// errorMessage unwraps HTTP errors produced by Import into their message.
+func errorMessage(err error) string {
+	var he *echo.HTTPError
+	if errors.As(err, &he) && he.Message != "" {
+		return he.Message
+	}
+	return err.Error()
 }
 
 // exportRepository writes every target locale of every attached component into
-// the checkout and returns the written paths.
+// the checkout, reusing the spelling of existing files, and returns the paths.
 func (s *Server) exportRepository(ctx context.Context, r db.Repository, g gitrepo.Repository) ([]string, error) {
 	targets, err := s.Q.ProjectLocales(ctx, r.ProjectID)
 	if err != nil {
@@ -204,6 +247,10 @@ func (s *Server) exportRepository(ctx context.Context, r db.Repository, g gitrep
 	}
 	var paths []string
 	for _, co := range components {
+		files, err := g.LocaleFiles(co.FilePattern)
+		if err != nil {
+			return nil, errors.New(co.Slug + ": " + err.Error())
+		}
 		for _, t := range targets {
 			raw, err := s.Export(ctx, co, t.Code)
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -212,7 +259,10 @@ func (s *Server) exportRepository(ctx context.Context, r db.Repository, g gitrep
 			if err != nil {
 				return nil, errors.New(co.Slug + " (" + t.Code + "): " + err.Error())
 			}
-			path := strings.ReplaceAll(co.FilePattern, "{locale}", t.Code)
+			path := gitrepo.LocalePath(co.FilePattern, t.Code, files)
+			if f := gitrepo.FindLocaleFile(files, t.Code); f != nil && !f.Default {
+				path = f.Path
+			}
 			if err = g.Write(path, raw); err != nil {
 				return nil, err
 			}
@@ -244,8 +294,8 @@ func (s *Server) repositoryAction(c *echo.Context) error {
 		case "push":
 			return g.Push(ctx)
 		case "sync":
-			imported, e := s.syncRepository(ctx, r, g, user(c).ID)
-			result["imported"] = imported
+			sync, e := s.syncRepository(ctx, r, g, user(c).ID)
+			result["sync"] = sync
 			return e
 		case "commit":
 			if e := g.Clean(ctx); e != nil {
@@ -451,7 +501,10 @@ func (s *Server) processDelivery(ctx context.Context) error {
 			} else if e = g.Pull(ctx); e != nil {
 				return e
 			}
-			_, e := s.syncRepository(ctx, r, g, 0)
+			sync, e := s.syncRepository(ctx, r, g, 0)
+			if e == nil && sync.failed() {
+				e = errors.New(strings.Join(sync.Errors, "; "))
+			}
 			return e
 		})
 		if err != nil {

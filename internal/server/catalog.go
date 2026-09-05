@@ -30,11 +30,6 @@ func localeCode(v string) (string, error) {
 	return tag.String(), nil
 }
 
-// IsLocaleName reports whether a file or directory name is a canonical locale code.
-func IsLocaleName(v string) bool {
-	tag, err := language.Parse(v)
-	return err == nil && v != "" && len(v) <= 64 && tag.String() == v
-}
 func CreateUser(ctx context.Context, q *db.Queries, email, password, name string, admin bool) (db.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	addr, err := mail.ParseAddress(email)
@@ -552,49 +547,66 @@ func (s *Server) importFile(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	n, err := s.Import(c.Request().Context(), co, loc, raw, user(c).ID)
+	res, err := s.Import(c.Request().Context(), co, loc, raw, user(c).ID)
 	if err != nil {
 		return err
 	}
-	return c.JSON(200, map[string]int{"imported": n})
+	if res.Imported == 0 && res.Unknown > 0 {
+		return echo.NewHTTPError(400, "no key matches the source catalog; import the source locale first")
+	}
+	return c.JSON(200, res)
+}
+
+// ImportResult summarizes one catalog import.
+type ImportResult struct {
+	Imported int `json:"imported"`
+	Unknown  int `json:"unknown"` // target keys missing from the source catalog (skipped)
+	Empty    int `json:"empty"`   // target entries without a value (left untranslated)
 }
 
 // Import parses a catalog and merges it. Source-locale imports create or update
 // units (changed sources flag translations for review); other locales update
-// translations of known keys and register the locale on the project. Empty
-// values in target catalogs are treated as untranslated and skipped.
-func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw []byte, uid int64) (int, error) {
+// translations of known keys and register the locale on the project. Keys
+// unknown to the source catalog and empty values are skipped and counted, so a
+// slightly divergent translation file still imports everything it can.
+func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw []byte, uid int64) (ImportResult, error) {
+	var res ImportResult
 	cat, err := formats.Parse(co.Format, raw)
 	if err != nil {
-		return 0, echo.NewHTTPError(400, err.Error())
+		return res, echo.NewHTTPError(400, err.Error())
 	}
-	if len(cat.Entries) == 0 || len(cat.Entries) > 10000 {
-		return 0, echo.NewHTTPError(400, "catalog must contain 1–10000 entries")
+	if len(cat.Entries) == 0 || len(cat.Entries) > 20000 {
+		return res, echo.NewHTTPError(400, "catalog must contain 1–20000 entries")
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	defer tx.Rollback(ctx)
 	// Serialize imports and edits in a component, including concurrent processes.
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", co.ID); err != nil {
-		return 0, err
+		return res, err
 	}
 	q := s.Q.WithTx(tx)
 	p, err := q.GetProject(ctx, co.ProjectID)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	if locale != p.SourceLocale {
 		if err = q.AddProjectLocale(ctx, db.AddProjectLocaleParams{ProjectID: co.ProjectID, Locale: locale}); err != nil {
-			return 0, err
+			return res, err
 		}
 	}
-	n := 0
+	if locale != p.SourceLocale {
+		// Unknown keys are re-derived from this file, so drop the previous report.
+		if err = q.DeleteImportIssues(ctx, db.DeleteImportIssuesParams{ComponentID: co.ID, Locale: locale}); err != nil {
+			return res, err
+		}
+	}
 	for _, entry := range cat.Entries {
 		old, findErr := q.FindUnit(ctx, db.FindUnitParams{ComponentID: co.ID, Key: entry.Key})
 		if findErr != nil && !errors.Is(findErr, pgx.ErrNoRows) {
-			return 0, findErr
+			return res, findErr
 		}
 		if locale == p.SourceLocale {
 			source := entry.Value
@@ -606,34 +618,90 @@ func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw
 			}
 			u, e := q.UpsertUnit(ctx, db.UpsertUnitParams{ComponentID: co.ID, Key: entry.Key, Source: source})
 			if e != nil {
-				return 0, e
+				return res, e
 			}
 			if findErr == nil && old.Source != source {
 				if e = q.MarkNeedsReview(ctx, u.ID); e != nil {
-					return 0, e
+					return res, e
 				}
 			}
-			n++
+			res.Imported++
 		} else {
 			if errors.Is(findErr, pgx.ErrNoRows) {
-				return 0, echo.NewHTTPError(400, "import source catalog first; unknown key: "+entry.Key)
+				res.Unknown++
+				value := entry.Value
+				if len(value) > 1000 {
+					value = value[:1000]
+				}
+				if e := q.AddImportIssue(ctx, db.AddImportIssueParams{ComponentID: co.ID, Locale: locale, Key: entry.Key, Value: value}); e != nil {
+					return res, e
+				}
+				continue
 			}
 			if entry.Value == "" {
+				res.Empty++
 				continue
 			}
 			if e := q.ImportTranslation(ctx, db.ImportTranslationParams{UnitID: old.ID, Locale: locale, Value: entry.Value, UpdatedBy: pgtype.Int8{Int64: uid, Valid: uid > 0}}); e != nil {
-				return 0, e
+				return res, e
 			}
-			n++
+			res.Imported++
+		}
+	}
+	if locale == p.SourceLocale {
+		// Keys the source now defines are no longer issues for any locale.
+		if err = q.PruneImportIssues(ctx, co.ID); err != nil {
+			return res, err
 		}
 	}
 	if err = q.SaveDocument(ctx, db.SaveDocumentParams{ComponentID: co.ID, Locale: locale, Content: raw}); err != nil {
-		return 0, err
+		return res, err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return 0, err
+		return res, err
 	}
-	return n, nil
+	return res, nil
+}
+func (s *Server) listImportIssues(c *echo.Context) error {
+	co, err := s.component(c, "viewer")
+	if err != nil {
+		return err
+	}
+	rows, err := s.Q.ListImportIssues(c.Request().Context(), co.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(200, rows)
+}
+func (s *Server) dismissImportIssue(c *echo.Context) error {
+	co, err := s.component(c, "manager")
+	if err != nil {
+		return err
+	}
+	var in struct{ Locale, Key string }
+	if err = decode(c, &in); err != nil {
+		return err
+	}
+	loc, err := localeCode(in.Locale)
+	if err != nil {
+		return err
+	}
+	n, err := s.Q.DismissImportIssue(c.Request().Context(), db.DismissImportIssueParams{ComponentID: co.ID, Locale: loc, Key: in.Key})
+	if err != nil {
+		return err
+	}
+	return c.JSON(200, map[string]int64{"dismissed": n})
+}
+func (s *Server) projectImportIssues(c *echo.Context) error {
+	pid, err := s.projectID(c, "viewer")
+	if err != nil {
+		return err
+	}
+	rows, err := s.Q.ProjectImportIssueCounts(c.Request().Context(), pid)
+	if err != nil {
+		return err
+	}
+	return c.JSON(200, rows)
 }
 func (s *Server) Export(ctx context.Context, co db.Component, locale string) ([]byte, error) {
 	p, err := s.Q.GetProject(ctx, co.ProjectID)

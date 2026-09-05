@@ -35,6 +35,14 @@ type GlossaryTerm struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ImportIssue struct {
+	ComponentID int64              `json:"component_id"`
+	Locale      string             `json:"locale"`
+	Key         string             `json:"key"`
+	Value       string             `json:"value"`
+	SeenAt      pgtype.Timestamptz `json:"seen_at"`
+}
+
 type Locale struct {
 	Code string `json:"code"`
 	Name string `json:"name"`

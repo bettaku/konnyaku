@@ -1,5 +1,8 @@
 # konnyaku
 
+> [!IMPORTANT]  
+> This software is still under the development, so be careful about using this
+
 Translation management server (in the spirit of Weblate / Crowdin) written in Go.
 
 * Go 1.27 · Echo v5 · pgx v5 · sqlc · PostgreSQL 18
@@ -21,7 +24,7 @@ Translation management server (in the spirit of Weblate / Crowdin) written in Go
 | Project glossary per locale, highlighted in source strings with a consistency check, CSV import/export | ✅ |
 | Machine translation: OpenAI-compatible chat API, Google Cloud Translation v3 | ✅ |
 | Repositories (project-level GitHub HTTPS remotes): clone / pull / sync / commit / push | ✅ |
-| Translation file auto-detection in a checkout (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`) | ✅ |
+| Translation file auto-detection in a checkout (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`); sync imports every locale file found, registering locales automatically, and tolerates `ja` vs `ja-JP`, `en_US` and Android `zh-rCN` spellings | ✅ |
 | GitHub push webhook → queued re-import of every attached component | ✅ |
 | "Publish translations": export on a fresh branch, push, open a draft pull request | ✅ |
 
@@ -81,13 +84,14 @@ All `/api/*` endpoints use a `session` cookie. Non-GET requests must send `X-Req
 | `GET/PUT/DELETE /api/projects/:id/members/:user` | manager |
 | `GET/POST /api/projects/:id/components`, `GET/PATCH/DELETE /api/components/:id` | manager for writes |
 | `GET /api/components/:id/stats`, `GET /api/components/:id/history?locale=` | viewer |
+| `GET /api/components/:id/issues` (keys in translation files missing from the source), `POST /api/components/:id/issues/dismiss` `{locale,key}` (empty key = whole locale), `GET /api/projects/:id/issues` | viewer / manager |
 | `GET /api/components/:id/units?locale=&q=&status=&offset=` | viewer (50 per page, returns `{total,units}`) |
 | `GET /api/units/:id/history?locale=` | viewer |
 | `GET /api/units/:id/assist?locale=` (translation memory + glossary hits) | viewer |
 | `GET/POST /api/projects/:id/glossary`, `DELETE /api/projects/:id/glossary/:term` | translator adds/updates, manager deletes |
 | `GET /api/projects/:id/glossary/export?locale=`, `POST /api/projects/:id/glossary/import?locale=` (CSV body) | viewer / translator |
 | `POST /api/components/:id/autofill` `{locale,status,dry_run}` (exact translation-memory matches into untranslated units) | translator |
-| `POST /api/components/:id/import?locale=` (raw file body) | manager |
+| `POST /api/components/:id/import?locale=` (raw file body; returns `{imported,unknown,empty}`) | manager |
 | `GET /api/components/:id/export?locale=` | viewer |
 | `PUT /api/units/:id/translations/:locale` `{value,status,version}` | translator (`reviewed` needs manager) |
 | `POST /api/units/:id/suggest` `{provider: openai\|google, locale}` | translator |
