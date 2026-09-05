@@ -418,6 +418,56 @@ func (q *Queries) EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams
 	return result.RowsAffected(), nil
 }
 
+const exactMemoryMatches = `-- name: ExactMemoryMatches :many
+SELECT u.id AS unit_id, u.key, coalesce((
+ SELECT t.value FROM units u2 JOIN translations t ON t.unit_id=u2.id AND t.locale=$1
+ JOIN components c2 ON c2.id=u2.component_id
+ WHERE u2.source=u.source AND u2.id<>u.id AND t.value<>''
+  AND ($2::boolean OR EXISTS (SELECT 1 FROM memberships m WHERE m.project_id=c2.project_id AND m.user_id=$3))
+ ORDER BY (t.status='reviewed') DESC, t.updated_at DESC LIMIT 1), '')::text AS value
+FROM units u LEFT JOIN translations t0 ON t0.unit_id=u.id AND t0.locale=$1
+WHERE u.component_id=$4 AND t0.unit_id IS NULL AND u.source <> ''
+ORDER BY u.key
+`
+
+type ExactMemoryMatchesParams struct {
+	Locale      string `json:"locale"`
+	IsAdmin     bool   `json:"is_admin"`
+	UserID      int64  `json:"user_id"`
+	ComponentID int64  `json:"component_id"`
+}
+
+type ExactMemoryMatchesRow struct {
+	UnitID int64  `json:"unit_id"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+}
+
+func (q *Queries) ExactMemoryMatches(ctx context.Context, arg ExactMemoryMatchesParams) ([]ExactMemoryMatchesRow, error) {
+	rows, err := q.db.Query(ctx, exactMemoryMatches,
+		arg.Locale,
+		arg.IsAdmin,
+		arg.UserID,
+		arg.ComponentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExactMemoryMatchesRow{}
+	for rows.Next() {
+		var i ExactMemoryMatchesRow
+		if err := rows.Scan(&i.UnitID, &i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const findUnit = `-- name: FindUnit :one
 SELECT id, component_id, key, source FROM units WHERE component_id=$1 AND key=$2
 `

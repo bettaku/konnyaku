@@ -82,6 +82,37 @@ export function ComponentPage() {
       saved(u, r.value, r.status, r.version);
     }, `Restored v${h.version}`);
   };
+  const [fillInfo, setFillInfo] = createSignal<{ untranslated: number; matches: number } | null>(null);
+  const [filling, setFilling] = createSignal(false);
+  createEffect(on(locale, () => setFillInfo(null)));
+  const checkFill = async () => {
+    setFilling(true);
+    try {
+      const r = await api.autofill(id(), locale(), true);
+      setFillInfo(r);
+      if (!r.untranslated) notify("Nothing left to translate in this locale", true);
+      else if (!r.matches) notify(`No exact translation-memory matches for the ${r.untranslated} untranslated unit(s)`, true);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFilling(false);
+    }
+  };
+  const applyFill = async (st: "needs_review" | "translated") => {
+    const info = fillInfo();
+    if (!info || !confirm(`Fill ${info.matches} of ${info.untranslated} untranslated unit(s) from exact translation-memory matches as "${st.replace("_", " ")}"?`)) return;
+    setFilling(true);
+    try {
+      const r = await api.autofill(id(), locale(), false, st);
+      notify(`Filled ${r.filled} unit(s)`, true);
+      setFillInfo(null);
+      refetchUnits(); refetchStats(); refetchActivity();
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFilling(false);
+    }
+  };
   const importFile = async (e: SubmitEvent) => {
     const { form } = formData(e);
     const file = (form.elements.namedItem("file") as HTMLInputElement).files?.[0];
@@ -158,7 +189,17 @@ export function ComponentPage() {
             </For>
             <Show when={!targets().length}><span class="muted small pad">No target locales — add them on the project page.</span></Show>
           </div>
-          <Show when={!isSource() && statFor(locale())}>{(s) => <div class="mb narrow"><Progress stat={s()} /></div>}</Show>
+          <div class="row center mb">
+            <Show when={!isSource() && statFor(locale())}>{(s) => <div class="narrow grow"><Progress stat={s()} /></div>}</Show>
+            <Show when={canEdit()}>
+              <Show when={fillInfo()?.matches} fallback={<button class="secondary small" disabled={filling()} onClick={checkFill} title="Copy translations of identical source strings from other components and projects">Fill from translation memory…</button>}>
+                <span class="small">{fillInfo()!.matches} of {fillInfo()!.untranslated} untranslated units have exact matches:</span>
+                <button class="small" disabled={filling()} onClick={() => applyFill("needs_review")}>Fill as needs review</button>
+                <button class="secondary small" disabled={filling()} onClick={() => applyFill("translated")}>Fill as translated</button>
+                <button class="ghost small" onClick={() => setFillInfo(null)}>Cancel</button>
+              </Show>
+            </Show>
+          </div>
 
           <div class="row center mb">
             <input class="grow" type="search" placeholder="Search key, source or translation" value={query()} onInput={(e) => onSearch(e.currentTarget.value)} />

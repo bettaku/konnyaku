@@ -122,6 +122,11 @@ export const api = {
   glossary: (project: number, locale?: string) => request<GlossaryTerm[]>("GET", `/projects/${project}/glossary${locale ? `?locale=${enc(locale)}` : ""}`),
   saveGlossaryTerm: (project: number, t: { locale: string; term: string; translation: string; note: string }) =>
     request<GlossaryTerm>("POST", `/projects/${project}/glossary`, t),
+  glossaryExportUrl: (project: number, locale?: string) => `/api/projects/${project}/glossary/export${locale ? `?locale=${enc(locale)}` : ""}`,
+  importGlossary: (project: number, file: File, locale?: string) =>
+    request<{ imported: number; skipped: number }>("POST", `/projects/${project}/glossary/import${locale ? `?locale=${enc(locale)}` : ""}`, file, true),
+  autofill: (component: number, locale: string, dryRun: boolean, status: "needs_review" | "translated" = "needs_review") =>
+    request<{ untranslated: number; matches: number; filled: number }>("POST", `/components/${component}/autofill`, { locale, status, dry_run: dryRun }),
   deleteGlossaryTerm: (project: number, id: number) => request<void>("DELETE", `/projects/${project}/glossary/${id}`),
   unitHistory: (id: number, locale: string) => request<HistoryEntry[]>("GET", `/units/${id}/history?locale=${enc(locale)}`),
   saveTranslation: (id: number, locale: string, t: { value: string; status: Status; version: number }) =>

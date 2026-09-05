@@ -307,6 +307,41 @@ func TestEndToEnd(t *testing.T) {
 	if len(assist.Memory) != 1 || assist.Memory[0].Source != "File" || assist.Memory[0].Value != "ファイル" || assist.Memory[0].Score <= 0 {
 		t.Fatalf("assist memory: %s", raw)
 	}
+	// Glossary CSV round trip and autofill from exact memory matches.
+	csvIn := "\xef\xbb\xbfterm,translation,note\nEdit,編集,verb\nfile,ファイル,\n,,\n"
+	res := trans.must(200, "POST", ppath+"/glossary/import?locale=ja", []byte(csvIn))
+	if res["imported"] != float64(2) || res["skipped"] != float64(1) {
+		t.Fatalf("csv import: %v", res)
+	}
+	if code, _ := trans.do("POST", ppath+"/glossary/import", []byte("term,translation\nx,y\n"), nil); code != 400 {
+		t.Fatalf("import without locale should be 400: %d", code)
+	}
+	if code, _ := trans.do("POST", ppath+"/glossary/import", []byte("term,locale,translation\nx,zz-ZZ,y\n"), nil); code != 400 {
+		t.Fatalf("unknown locale should be 400: %d", code)
+	}
+	_, raw = trans.do("GET", ppath+"/glossary/export?locale=ja", nil, nil)
+	if !strings.HasPrefix(string(raw), "term,locale,translation,note\nEdit,ja,編集,verb\n") || !strings.Contains(string(raw), "file,ja,ファイル,\n") {
+		t.Fatalf("csv export: %s", raw)
+	}
+	dry := trans.must(200, "POST", c2path+"/autofill", map[string]any{"locale": "ja", "dry_run": true})
+	if dry["untranslated"] != float64(2) || dry["matches"] != float64(0) {
+		t.Fatalf("dry run before exact match: %v", dry)
+	}
+	admin.must(200, "POST", c2path+"/import?locale=en", []byte(`{"open":"Open file","other":"Something unrelated","hello":"Hello!"}`))
+	dry = trans.must(200, "POST", c2path+"/autofill", map[string]any{"locale": "ja", "dry_run": true})
+	if dry["untranslated"] != float64(3) || dry["matches"] != float64(1) || dry["filled"] != float64(0) {
+		t.Fatalf("dry run: %v", dry)
+	}
+	fill := trans.must(200, "POST", c2path+"/autofill", map[string]any{"locale": "ja"})
+	if fill["filled"] != float64(1) {
+		t.Fatalf("autofill: %v", fill)
+	}
+	_, raw = trans.do("GET", c2path+"/units?locale=ja&status=needs_review", nil, nil)
+	_ = json.Unmarshal(raw, &page)
+	if page.Total != 1 || page.Units[0].Key != "/hello" || page.Units[0].Value != "こんにちは" {
+		t.Fatalf("autofilled unit: %s", raw)
+	}
+	trans.must(400, "POST", c2path+"/autofill", map[string]any{"locale": "ja", "status": "reviewed"})
 	trans.must(403, "DELETE", ppath+"/glossary/"+itoa(int64(g["id"].(float64))), nil)
 	admin.must(204, "DELETE", ppath+"/glossary/"+itoa(int64(g["id"].(float64))), nil)
 	admin.must(404, "DELETE", ppath+"/glossary/"+itoa(int64(g["id"].(float64))), nil)

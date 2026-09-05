@@ -168,3 +168,14 @@ ON CONFLICT (project_id,locale,lower(term)) DO UPDATE SET term=excluded.term,tra
 DELETE FROM glossary_terms WHERE id=$1 AND project_id=$2;
 -- name: GlossaryMatches :many
 SELECT * FROM glossary_terms WHERE project_id=$1 AND locale=$2 AND position(lower(term) IN lower(sqlc.arg(source))) > 0 ORDER BY length(term) DESC, term;
+
+-- name: ExactMemoryMatches :many
+SELECT u.id AS unit_id, u.key, coalesce((
+ SELECT t.value FROM units u2 JOIN translations t ON t.unit_id=u2.id AND t.locale=sqlc.arg(locale)
+ JOIN components c2 ON c2.id=u2.component_id
+ WHERE u2.source=u.source AND u2.id<>u.id AND t.value<>''
+  AND (sqlc.arg(is_admin)::boolean OR EXISTS (SELECT 1 FROM memberships m WHERE m.project_id=c2.project_id AND m.user_id=sqlc.arg(user_id)))
+ ORDER BY (t.status='reviewed') DESC, t.updated_at DESC LIMIT 1), '')::text AS value
+FROM units u LEFT JOIN translations t0 ON t0.unit_id=u.id AND t0.locale=sqlc.arg(locale)
+WHERE u.component_id=sqlc.arg(component_id) AND t0.unit_id IS NULL AND u.source <> ''
+ORDER BY u.key;

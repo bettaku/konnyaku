@@ -17,8 +17,8 @@ Translation management server (in the spirit of Weblate / Crowdin) written in Go
 | Translation UI: per-locale tabs with progress, server-side search, status filter, paging, optimistic locking | ✅ |
 | Progress statistics per project / component / locale | ✅ |
 | Translation history with word/character diffs and one-click restore, recorded by a database trigger | ✅ |
-| Translation memory (pg_trgm similarity across the projects a user can access) | ✅ |
-| Project glossary per locale, highlighted in source strings with a consistency check | ✅ |
+| Translation memory (pg_trgm similarity across the projects a user can access) with one-click bulk fill of exact matches | ✅ |
+| Project glossary per locale, highlighted in source strings with a consistency check, CSV import/export | ✅ |
 | Machine translation: OpenAI-compatible chat API, Google Cloud Translation v3 | ✅ |
 | Repositories (project-level GitHub HTTPS remotes): clone / pull / sync / commit / push | ✅ |
 | Translation file auto-detection in a checkout (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`) | ✅ |
@@ -75,6 +75,8 @@ All `/api/*` endpoints use a `session` cookie. Non-GET requests must send `X-Req
 | `GET /api/units/:id/history?locale=` | viewer |
 | `GET /api/units/:id/assist?locale=` (translation memory + glossary hits) | viewer |
 | `GET/POST /api/projects/:id/glossary`, `DELETE /api/projects/:id/glossary/:term` | translator adds/updates, manager deletes |
+| `GET /api/projects/:id/glossary/export?locale=`, `POST /api/projects/:id/glossary/import?locale=` (CSV body) | viewer / translator |
+| `POST /api/components/:id/autofill` `{locale,status,dry_run}` (exact translation-memory matches into untranslated units) | translator |
 | `POST /api/components/:id/import?locale=` (raw file body) | manager |
 | `GET /api/components/:id/export?locale=` | viewer |
 | `PUT /api/units/:id/translations/:locale` `{value,status,version}` | translator (`reviewed` needs manager) |

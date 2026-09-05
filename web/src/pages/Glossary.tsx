@@ -8,7 +8,7 @@ export function GlossaryPage() {
   const params = useParams();
   const id = () => Number(params.id);
   const [search, setSearch] = useSearchParams<{ locale?: string }>();
-  const { locales } = useSession();
+  const { locales, notify } = useSession();
   const run = useAction();
   const [detail] = createResource(id, api.project);
   const locale = () => (typeof search.locale === "string" && search.locale) || "";
@@ -30,6 +30,17 @@ export function GlossaryPage() {
       refetch();
     }
   };
+  const importCsv = async (e: SubmitEvent) => {
+    const { form } = formData(e);
+    const file = (form.elements.namedItem("file") as HTMLInputElement).files?.[0];
+    const loc = (form.elements.namedItem("locale") as HTMLSelectElement).value;
+    if (!file) return;
+    const ok = await run(async () => {
+      const r = await api.importGlossary(id(), file, loc || undefined);
+      notify(`Imported ${r.imported} term${r.imported === 1 ? "" : "s"}${r.skipped ? `, skipped ${r.skipped} empty row(s)` : ""}`, true);
+    });
+    if (ok) { form.reset(); refetch(); }
+  };
   const remove = async (t: GlossaryTerm) => {
     if (!confirm(`Delete "${t.term}" (${t.locale})?`)) return;
     if (await run(() => api.deleteGlossaryTerm(id(), t.id))) refetch();
@@ -46,7 +57,21 @@ export function GlossaryPage() {
               <LocaleSelect locales={d().locales} value={locale()} allowEmpty="all locales" onChange={(v) => setSearch({ locale: v || undefined })} />
             </label>
             <input class="grow" type="search" placeholder="Filter terms" value={filter()} onInput={(e) => setFilter(e.currentTarget.value)} />
+            <a class="small" href={api.glossaryExportUrl(id(), locale() || undefined)}>Export CSV{locale() ? ` (${locale()})` : ""}</a>
           </div>
+          <Show when={canEdit()}>
+            <details>
+              <summary>Import CSV</summary>
+              <form class="panel row" onSubmit={importCsv}>
+                <label>File<input name="file" type="file" accept=".csv,text/csv" required /></label>
+                <label>Locale for rows without a locale column
+                  <LocaleSelect name="locale" locales={d().locales} value={locale()} allowEmpty="use the locale column" />
+                </label>
+                <button type="submit" class="secondary">Import</button>
+                <span class="muted small">Header row required: <code>term,translation</code> plus optional <code>locale</code> and <code>note</code>. Existing terms are updated.</span>
+              </form>
+            </details>
+          </Show>
           <Show when={canEdit()}>
             <form class="panel row" onSubmit={save}>
               <label>Locale<LocaleSelect name="locale" locales={d().locales} value={editing()?.locale || locale() || d().locales[0]?.code} /></label>
