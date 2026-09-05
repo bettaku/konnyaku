@@ -1,2 +1,91 @@
 # konnyaku
-Translation management server software
+
+Translation management server (in the spirit of Weblate / Crowdin) written in Go.
+
+* Go 1.27 · Echo v5 · pgx v5 · sqlc · PostgreSQL 18
+* Web UI: Vite + SolidJS + TypeScript, built into `web/dist` and embedded in the single binary.
+* Designed to sit behind nginx, Caddy, or Cloudflare Tunnel (`PUBLIC_URL` must be the public origin).
+
+## Features (current version)
+
+| Area | Status |
+| --- | --- |
+| Locales / projects / components | ✅ |
+| Users, admin flag, per-project roles (viewer / translator / manager) | ✅ |
+| Catalog formats: JSON, YAML, gettext PO, Android `strings.xml` | ✅ (strings only; PO plurals and styled Android strings are rejected, not lost) |
+| Import / export | ✅ (comments retained where supported; JSON is reformatted) |
+| Translation UI: per-locale tabs with progress, server-side search, status filter, paging, optimistic locking | ✅ |
+| Progress statistics per project / component / locale | ✅ |
+| Translation history (per unit and activity feeds), recorded by a database trigger | ✅ |
+| Machine translation: OpenAI-compatible chat API, Google Cloud Translation v3 | ✅ |
+| Repositories (project-level GitHub HTTPS remotes): clone / pull / sync / commit / push | ✅ |
+| Translation file auto-detection in a checkout (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`) | ✅ |
+| GitHub push webhook → queued re-import of every attached component | ✅ |
+| "Publish translations": export on a fresh branch, push, open a draft pull request | ✅ |
+
+## Quick start (development)
+
+```bash
+docker compose up -d                     # PostgreSQL 18 on 127.0.0.1:55432
+cp .env.example .env                     # then export the variables (e.g. `set -a; . ./.env; set +a`)
+make web                                 # builds the SPA into web/dist (needs Node 22+ and pnpm)
+go run ./cmd/konnyaku migrate
+ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-please' ADMIN_NAME=Admin go run ./cmd/konnyaku create-admin
+go run ./cmd/konnyaku serve              # http://localhost:8080
+```
+
+Then in the UI: add locales → create a project (source locale) → connect a GitHub repository → **Clone** → **Detect translation files** → create components from the suggestions → **Sync from checkout** → translate → **Open draft pull request**. Components without a repository work with manual import/export instead.
+
+For frontend development run `cd web && pnpm dev` (Vite on :5173, proxies `/api` to the Go server on :8080).
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `konnyaku migrate` | Apply embedded SQL migrations (`db/migrations`), idempotent, advisory-locked |
+| `konnyaku create-admin` | Create an administrator from `ADMIN_*` env vars |
+| `konnyaku serve` | Run HTTP server + webhook worker |
+
+## Configuration
+
+See [.env.example](.env.example). `DATABASE_URL` is required; everything else is optional and the related feature returns a clear error when unset.
+
+## HTTP API
+
+All `/api/*` endpoints use a `session` cookie. Non-GET requests must send `X-Requested-With: konnyaku` (CSRF guard) and, if present, an `Origin` equal to `PUBLIC_URL`.
+
+| Method & path | Role |
+| --- | --- |
+| `POST /api/login`, `POST /api/logout`, `GET /api/me` | – |
+| `GET/POST /api/users` | admin |
+| `GET/POST /api/locales`, `DELETE /api/locales/:code` | admin for writes |
+| `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/:id` | admin creates; manager edits |
+| `GET /api/projects/:id/stats`, `GET /api/projects/:id/history` | viewer |
+| `GET /api/projects/:id/locales`, `PUT/DELETE /api/projects/:id/locales/:code` | manager for writes |
+| `GET/POST /api/projects/:id/repositories`, `GET/DELETE /api/repositories/:id` | admin creates/deletes |
+| `GET /api/repositories/:id/scan` | manager |
+| `POST /api/repositories/:id/git/:action` (`clone\|pull\|push\|sync\|commit`) | manager for `sync`, admin otherwise |
+| `POST /api/repositories/:id/pull-request` `{title,body}` | admin |
+| `GET/PUT/DELETE /api/projects/:id/members/:user` | manager |
+| `GET/POST /api/projects/:id/components`, `GET/PATCH/DELETE /api/components/:id` | manager for writes |
+| `GET /api/components/:id/stats`, `GET /api/components/:id/history?locale=` | viewer |
+| `GET /api/components/:id/units?locale=&q=&status=&offset=` | viewer (50 per page, returns `{total,units}`) |
+| `GET /api/units/:id/history?locale=` | viewer |
+| `POST /api/components/:id/import?locale=` (raw file body) | manager |
+| `GET /api/components/:id/export?locale=` | viewer |
+| `PUT /api/units/:id/translations/:locale` `{value,status,version}` | translator (`reviewed` needs manager) |
+| `POST /api/units/:id/suggest` `{provider: openai\|google, locale}` | translator |
+| `GET /api/deliveries`, `POST /api/deliveries/:id/retry` | admin |
+| `POST /webhooks/github` (HMAC `X-Hub-Signature-256`) | GitHub |
+
+## Development
+
+```bash
+make test        # unit tests (no database needed)
+make sqlc        # regenerate internal/db after editing db/queries or db/migrations
+make web         # rebuild the SPA (the Go binary embeds web/dist, so rebuild + restart after UI changes)
+```
+
+Integration tests for the server package run only when `TEST_DATABASE_URL` points to PostgreSQL 18. Each test creates and removes its own schema; the existing public schema is preserved. Use a development database.
+
+Deployment examples (Docker, nginx, Caddy, Cloudflare Tunnel), integration setup, and current limitations are documented in [deploy/README.md](deploy/README.md).

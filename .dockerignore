@@ -1,0 +1,13 @@
+.git
+.agents
+.codex
+.claude
+.env
+.env.*
+data
+bin
+coverage.*
+*.test
+node_modules
+web/dist
+web/node_modules

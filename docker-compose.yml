@@ -1,0 +1,16 @@
+# Development stack: PostgreSQL 18 only. Run the Go server on the host with
+# DATABASE_URL=postgres://konnyaku:konnyaku-dev@127.0.0.1:55432/konnyaku?sslmode=disable
+services:
+  postgres:
+    image: postgres:18
+    container_name: konnyaku-dev-postgres
+    environment:
+      POSTGRES_USER: konnyaku
+      POSTGRES_PASSWORD: konnyaku-dev
+      POSTGRES_DB: konnyaku
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - konnyaku-pgdata:/var/lib/postgresql
+volumes:
+  konnyaku-pgdata:
