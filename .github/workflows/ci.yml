@@ -1,0 +1,42 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: konnyaku
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: konnyaku
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U konnyaku"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://konnyaku:test-only@localhost:5432/konnyaku?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: make web
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.1
+          cache: true
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: make sqlc
+      - run: git diff --exit-code -- internal/db
+      - run: go build ./cmd/konnyaku

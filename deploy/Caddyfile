@@ -1,0 +1,8 @@
+# Replace the hostname and set PUBLIC_URL=https://translate.example.com.
+translate.example.com {
+	reverse_proxy 127.0.0.1:8080 {
+		transport http {
+			response_header_timeout 240s
+		}
+	}
+}

@@ -1,0 +1,29 @@
+{
+  "name": "konnyaku",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspaces/konnyaku",
+  "shutdownAction": "stopCompose",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "24", "pnpmVersion": "11.17.0" },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "forwardPorts": [8080, 5173, 5432],
+  "portsAttributes": {
+    "8080": { "label": "konnyaku", "onAutoForward": "notify" },
+    "5173": { "label": "vite dev", "onAutoForward": "silent" },
+    "5432": { "label": "postgres", "onAutoForward": "silent" }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go", "dbaeumer.vscode-eslint", "esbenp.prettier-vscode", "bradlc.vscode-tailwindcss"],
+      "settings": {
+        "go.toolsManagement.autoUpdate": true,
+        "editor.formatOnSave": true,
+        "[go]": { "editor.defaultFormatter": "golang.go" }
+      }
+    }
+  },
+  "remoteUser": "vscode"
+}
