@@ -10,6 +10,11 @@ services:
       - go-mod-cache:/go/pkg/mod
       - go-build-cache:/home/vscode/.cache/go-build
     command: sleep infinity
+    # Local secrets (GITHUB_TOKEN, OPENAI_API_KEY, ...): copy secrets.env.example to
+    # secrets.env; the file is ignored by git.
+    env_file:
+      - path: ./secrets.env
+        required: false
     environment:
       DATABASE_URL: postgres://konnyaku:konnyaku-dev@db:5432/konnyaku?sslmode=disable
       TEST_DATABASE_URL: postgres://konnyaku:konnyaku-dev@db:5432/konnyaku_test?sslmode=disable
