@@ -597,6 +597,12 @@ func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw
 			return res, err
 		}
 	}
+	if locale != p.SourceLocale {
+		// Unknown keys are re-derived from this file, so drop the previous report.
+		if err = q.DeleteImportIssues(ctx, db.DeleteImportIssuesParams{ComponentID: co.ID, Locale: locale}); err != nil {
+			return res, err
+		}
+	}
 	for _, entry := range cat.Entries {
 		old, findErr := q.FindUnit(ctx, db.FindUnitParams{ComponentID: co.ID, Key: entry.Key})
 		if findErr != nil && !errors.Is(findErr, pgx.ErrNoRows) {
@@ -623,6 +629,13 @@ func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw
 		} else {
 			if errors.Is(findErr, pgx.ErrNoRows) {
 				res.Unknown++
+				value := entry.Value
+				if len(value) > 1000 {
+					value = value[:1000]
+				}
+				if e := q.AddImportIssue(ctx, db.AddImportIssueParams{ComponentID: co.ID, Locale: locale, Key: entry.Key, Value: value}); e != nil {
+					return res, e
+				}
 				continue
 			}
 			if entry.Value == "" {
@@ -635,6 +648,12 @@ func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw
 			res.Imported++
 		}
 	}
+	if locale == p.SourceLocale {
+		// Keys the source now defines are no longer issues for any locale.
+		if err = q.PruneImportIssues(ctx, co.ID); err != nil {
+			return res, err
+		}
+	}
 	if err = q.SaveDocument(ctx, db.SaveDocumentParams{ComponentID: co.ID, Locale: locale, Content: raw}); err != nil {
 		return res, err
 	}
@@ -642,6 +661,47 @@ func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw
 		return res, err
 	}
 	return res, nil
+}
+func (s *Server) listImportIssues(c *echo.Context) error {
+	co, err := s.component(c, "viewer")
+	if err != nil {
+		return err
+	}
+	rows, err := s.Q.ListImportIssues(c.Request().Context(), co.ID)
+	if err != nil {
+		return err
+	}
+	return c.JSON(200, rows)
+}
+func (s *Server) dismissImportIssue(c *echo.Context) error {
+	co, err := s.component(c, "manager")
+	if err != nil {
+		return err
+	}
+	var in struct{ Locale, Key string }
+	if err = decode(c, &in); err != nil {
+		return err
+	}
+	loc, err := localeCode(in.Locale)
+	if err != nil {
+		return err
+	}
+	n, err := s.Q.DismissImportIssue(c.Request().Context(), db.DismissImportIssueParams{ComponentID: co.ID, Locale: loc, Key: in.Key})
+	if err != nil {
+		return err
+	}
+	return c.JSON(200, map[string]int64{"dismissed": n})
+}
+func (s *Server) projectImportIssues(c *echo.Context) error {
+	pid, err := s.projectID(c, "viewer")
+	if err != nil {
+		return err
+	}
+	rows, err := s.Q.ProjectImportIssueCounts(c.Request().Context(), pid)
+	if err != nil {
+		return err
+	}
+	return c.JSON(200, rows)
 }
 func (s *Server) Export(ctx context.Context, co db.Component, locale string) ([]byte, error) {
 	p, err := s.Q.GetProject(ctx, co.ProjectID)

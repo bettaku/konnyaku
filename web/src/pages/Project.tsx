@@ -15,6 +15,8 @@ export function ProjectPage() {
   const [repositories, { refetch: refetchRepos }] = createResource(id, api.repositories);
   const [stats, { refetch: refetchStats }] = createResource(id, api.projectStats);
   const [history] = createResource(id, api.projectHistory);
+  const [issueCounts] = createResource(id, api.projectIssues);
+  const issuesFor = (componentId: number) => issueCounts()?.find((x) => x.component_id === componentId)?.issues ?? 0;
   const manage = () => detail()?.role === "manager" || detail()?.role === "admin";
   const [members, { refetch: refetchMembers }] = createResource(() => (manage() ? id() : null), api.members);
   const [users] = createResource(() => (user()?.admin && manage() ? true : null), () => api.users());
@@ -132,7 +134,9 @@ export function ProjectPage() {
                       <For each={components()}>
                         {(c) => (
                           <tr>
-                            <td><A href={`/components/${c.id}`}>{c.name}</A></td>
+                            <td><A href={`/components/${c.id}`}>{c.name}</A>
+                              <Show when={issuesFor(c.id)}>{(n) => <A href={`/components/${c.id}`} class="badge needs_review ml" title="keys in translation files that the source catalog lacks">⚠ {n()} unknown key{n() === 1 ? "" : "s"}</A>}</Show>
+                            </td>
                             <td>{c.format}</td>
                             <td>
                               <Show when={c.repository_id} fallback={<span class="muted">—</span>}>

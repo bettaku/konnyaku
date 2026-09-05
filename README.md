@@ -81,6 +81,7 @@ All `/api/*` endpoints use a `session` cookie. Non-GET requests must send `X-Req
 | `GET/PUT/DELETE /api/projects/:id/members/:user` | manager |
 | `GET/POST /api/projects/:id/components`, `GET/PATCH/DELETE /api/components/:id` | manager for writes |
 | `GET /api/components/:id/stats`, `GET /api/components/:id/history?locale=` | viewer |
+| `GET /api/components/:id/issues` (keys in translation files missing from the source), `POST /api/components/:id/issues/dismiss` `{locale,key}` (empty key = whole locale), `GET /api/projects/:id/issues` | viewer / manager |
 | `GET /api/components/:id/units?locale=&q=&status=&offset=` | viewer (50 per page, returns `{total,units}`) |
 | `GET /api/units/:id/history?locale=` | viewer |
 | `GET /api/units/:id/assist?locale=` (translation memory + glossary hits) | viewer |

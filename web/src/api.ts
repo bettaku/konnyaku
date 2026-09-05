@@ -46,6 +46,7 @@ export type ActivityEntry = HistoryEntry & { unit_id: number; key: string; local
 export type MemoryMatch = { source: string; value: string; status: Status; component_name: string; project_name: string; score: number };
 export type GlossaryTerm = { id: number; project_id: number; locale: string; term: string; translation: string; note: string; updated_by: number | null; updated_at: string; updated_by_name?: string };
 export type Assist = { memory: MemoryMatch[]; glossary: GlossaryTerm[] };
+export type ImportIssue = { component_id: number; locale: string; key: string; value: string; seen_at: string };
 export type Delivery = { delivery_id: string; received_at: string; repository_url: string; ref: string; status: string; error: string };
 
 let onUnauthorized: (() => void) | null = null;
@@ -108,6 +109,9 @@ export const api = {
     request<Component>("PATCH", `/components/${id}`, c),
   deleteComponent: (id: number) => request<void>("DELETE", `/components/${id}`),
   componentStats: (id: number) => request<Stat[]>("GET", `/components/${id}/stats`),
+  componentIssues: (id: number) => request<ImportIssue[]>("GET", `/components/${id}/issues`),
+  dismissIssue: (id: number, locale: string, key: string) => request<{ dismissed: number }>("POST", `/components/${id}/issues/dismiss`, { locale, key }),
+  projectIssues: (id: number) => request<Array<{ component_id: number; issues: number }>>("GET", `/projects/${id}/issues`),
   componentHistory: (id: number, locale?: string) =>
     request<ActivityEntry[]>("GET", `/components/${id}/history${locale ? `?locale=${enc(locale)}` : ""}`),
   units: (id: number, p: { locale: string; offset?: number; q?: string; status?: string }) => {

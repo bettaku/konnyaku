@@ -238,6 +238,19 @@ func TestEndToEnd(t *testing.T) {
 	if units[0].Status != "needs_review" || units[1].Status != "reviewed" {
 		t.Fatalf("statuses after source change: %+v", units)
 	}
+	// Unknown keys are reported per component and cleared when the source gains them.
+	_, raw = trans.do("GET", cpath+"/issues", nil, nil)
+	if !strings.Contains(string(raw), `"key":"/extra","value":"unknown key"`) || !strings.Contains(string(raw), `"key":"/blank"`) {
+		t.Fatalf("issues: %s", raw)
+	}
+	_, raw = trans.do("GET", ppath+"/issues", nil, nil)
+	if !strings.Contains(string(raw), `"issues":2`) {
+		t.Fatalf("project issue counts: %s", raw)
+	}
+	trans.must(403, "POST", cpath+"/issues/dismiss", map[string]string{"locale": "ja", "key": "/blank"})
+	if d := admin.must(200, "POST", cpath+"/issues/dismiss", map[string]string{"locale": "ja", "key": "/blank"}); d["dismissed"] != float64(1) {
+		t.Fatalf("dismiss: %v", d)
+	}
 	// Server-side search, status filter and count.
 	_, raw = trans.do("GET", cpath+"/units?locale=ja&q=%25file&status=reviewed", nil, nil)
 	_ = json.Unmarshal(raw, &page)
@@ -290,6 +303,14 @@ func TestEndToEnd(t *testing.T) {
 	co2 := admin.must(201, "POST", ppath+"/components", map[string]string{"slug": "docs", "name": "Docs", "format": "json"})
 	c2path := "/api/components/" + itoa(int64(co2["id"].(float64)))
 	admin.must(200, "POST", c2path+"/import?locale=en", []byte(`{"open":"Open file","other":"Something unrelated"}`))
+	admin.must(200, "POST", c2path+"/import?locale=ja", []byte(`{"open":"ファイルを開く","later":"後で追加されるキー"}`))
+	if _, raw = trans.do("GET", c2path+"/issues", nil, nil); !strings.Contains(string(raw), `"key":"/later"`) {
+		t.Fatalf("docs issues: %s", raw)
+	}
+	admin.must(200, "POST", c2path+"/import?locale=en", []byte(`{"open":"Open file","other":"Something unrelated","later":"Added later"}`))
+	if _, raw = trans.do("GET", c2path+"/issues", nil, nil); string(raw) != "[]\n" {
+		t.Fatalf("issues should be resolved by the source import: %s", raw)
+	}
 	_, raw = trans.do("GET", c2path+"/units?locale=ja", nil, nil)
 	_ = json.Unmarshal(raw, &page)
 	var openID int64
