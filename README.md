@@ -1,5 +1,8 @@
 # konnyaku
 
+> [!IMPORTANT]  
+> This software is still under the development, so be careful about using this
+
 Translation management server (in the spirit of Weblate / Crowdin) written in Go.
 
 * Go 1.27 · Echo v5 · pgx v5 · sqlc · PostgreSQL 18

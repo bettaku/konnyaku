@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web
 WORKDIR /src/web
 RUN corepack enable
 COPY web/package.json web/pnpm-lock.yaml ./
@@ -6,13 +6,14 @@ RUN pnpm install --frozen-lockfile
 COPY web/ ./
 RUN pnpm build
 
-FROM golang:1.27.1-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/konnyaku ./cmd/konnyaku
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/konnyaku ./cmd/konnyaku
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/* \
