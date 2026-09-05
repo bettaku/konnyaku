@@ -10,7 +10,7 @@ Translation management server (in the spirit of Weblate / Crowdin) written in Go
 
 | Area | Status |
 | --- | --- |
-| Locales / projects / components | ✅ |
+| Locales (106 language-REGION codes seeded by default, e.g. `ja-JP`, `pt-BR`) / projects / components | ✅ |
 | Users, admin flag, per-project roles (viewer / translator / manager) | ✅ |
 | Catalog formats: JSON, YAML, gettext PO, Android `strings.xml` | ✅ (strings only; PO plurals and styled Android strings are rejected, not lost) |
 | Import / export | ✅ (comments retained where supported; JSON is reformatted) |
@@ -36,7 +36,7 @@ ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-please' ADMIN_NAME=Admin
 go run ./cmd/konnyaku serve              # http://localhost:8080
 ```
 
-Then in the UI: add locales → create a project (source locale) → connect a GitHub repository → **Clone** → **Detect translation files** → create components from the suggestions → **Sync from checkout** → translate → **Open draft pull request**. Components without a repository work with manual import/export instead.
+Then in the UI: create a project (source locale) → connect a GitHub repository → **Clone** → **Detect translation files** → create components from the suggestions → **Sync from checkout** → translate → **Open draft pull request**. Components without a repository work with manual import/export instead.
 
 For frontend development run `cd web && pnpm dev` (Vite on :5173, proxies `/api` to the Go server on :8080).
 
