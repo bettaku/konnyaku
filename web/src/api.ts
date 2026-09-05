@@ -24,6 +24,8 @@ export type Repository = { id: number; project_id: number; name: string; url: st
 export type Checkout = { exists: boolean; branch: string; commit: string; subject: string; dirty: boolean; modified: number };
 export type RepositoryStatus = { repository: Repository; checkout: Checkout; components: Component[]; github_token: boolean };
 export type Candidate = { pattern: string; format: Format; locales: string[] };
+export type SyncFile = { component: string; locale: string; path: string; imported: number; unknown: number; empty: number };
+export type SyncResult = { files: SyncFile[]; ignored: string[]; errors: string[] };
 export type Member = { user_id: number; email: string; name: string; role: Role };
 export type Status = "untranslated" | "translated" | "reviewed" | "needs_review";
 export type Unit = { id: number; key: string; source: string; value: string; status: Status; version: number; updated_at: string | null };
@@ -116,7 +118,7 @@ export const api = {
     return request<UnitPage>("GET", `/components/${id}/units?${qs}`);
   },
   importFile: (id: number, locale: string, file: File) =>
-    request<{ imported: number }>("POST", `/components/${id}/import?locale=${enc(locale)}`, file, true),
+    request<{ imported: number; unknown: number; empty: number }>("POST", `/components/${id}/import?locale=${enc(locale)}`, file, true),
   exportUrl: (id: number, locale: string) => `/api/components/${id}/export?locale=${enc(locale)}`,
   assist: (id: number, locale: string) => request<Assist>("GET", `/units/${id}/assist?locale=${enc(locale)}`),
   glossary: (project: number, locale?: string) => request<GlossaryTerm[]>("GET", `/projects/${project}/glossary${locale ? `?locale=${enc(locale)}` : ""}`),
@@ -140,7 +142,7 @@ export const api = {
   deleteRepository: (id: number) => request<void>("DELETE", `/repositories/${id}`),
   scanRepository: (id: number) => request<Candidate[]>("GET", `/repositories/${id}/scan`),
   repositoryAction: (id: number, action: "clone" | "pull" | "push" | "sync" | "commit", message = "") =>
-    request<{ status: string; imported?: Record<string, number>; committed?: boolean }>("POST", `/repositories/${id}/git/${action}`, { message }),
+    request<{ status: string; sync?: SyncResult; committed?: boolean }>("POST", `/repositories/${id}/git/${action}`, { message }),
   pullRequest: (id: number, title: string, body: string) =>
     request<{ url: string; branch: string }>("POST", `/repositories/${id}/pull-request`, { title, body }),
   deliveries: () => request<Delivery[]>("GET", "/deliveries"),

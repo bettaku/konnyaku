@@ -1,7 +1,7 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import { useNavigate, useParams } from "@solidjs/router";
 import { A } from "@solidjs/router";
-import { api, type Candidate } from "../api";
+import { api, type Candidate, type SyncResult } from "../api";
 import { useAction, useSession } from "../session";
 import { Crumbs, Empty, formData } from "../ui";
 
@@ -15,15 +15,18 @@ export function RepositoryPage() {
   const [project] = createResource(() => status()?.repository.project_id ?? null, api.project);
   const [candidates, setCandidates] = createSignal<Candidate[] | null>(null);
   const [busy, setBusy] = createSignal("");
+  const [lastSync, setLastSync] = createSignal<SyncResult | null>(null);
   const manage = () => project()?.role === "manager" || project()?.role === "admin";
 
   const action = async (name: "clone" | "pull" | "push" | "sync" | "commit", message = "") => {
     setBusy(name);
     try {
       const r = await api.repositoryAction(id(), name, message);
-      if (name === "sync") {
-        const parts = Object.entries(r.imported ?? {}).map(([k, v]) => `${k}: ${v}`);
-        notify(parts.length ? `Imported ${parts.join(", ")}` : "Nothing to import (attach components first)", true);
+      if (name === "sync" && r.sync) {
+        setLastSync(r.sync);
+        const total = r.sync.files.reduce((n, f) => n + f.imported, 0);
+        if (r.sync.errors.length) notify(`Imported ${total} entries from ${r.sync.files.length} file(s); ${r.sync.errors.length} file(s) failed — see the sync report`);
+        else notify(`Imported ${total} entries from ${r.sync.files.length} file(s)`, true);
       } else if (name === "commit") notify(r.committed ? "Committed translation changes" : "No translation changes to commit", true);
       else notify(`${name} done`, true);
       refetch();
@@ -126,6 +129,43 @@ export function RepositoryPage() {
             </section>
           </div>
 
+          <Show when={lastSync()}>
+            {(r) => (
+              <>
+                <h2>Sync report</h2>
+                <Show when={r().errors.length}>
+                  <div class="panel">
+                    <strong class="error">Files that could not be imported</strong>
+                    <ul class="small"><For each={r().errors}>{(e) => <li>{e}</li>}</For></ul>
+                  </div>
+                </Show>
+                <Show when={r().files.length}>
+                  <div class="table-wrap">
+                    <table>
+                      <thead><tr><th>Component</th><th>Locale</th><th>File</th><th>Imported</th><th>Unknown keys</th><th>Empty</th></tr></thead>
+                      <tbody>
+                        <For each={r().files}>
+                          {(f) => (
+                            <tr>
+                              <td>{f.component}</td>
+                              <td><span class="badge">{f.locale}</span></td>
+                              <td><code>{f.path}</code></td>
+                              <td>{f.imported}</td>
+                              <td class={f.unknown ? "term-missing" : "muted"} title="keys present in this file but not in the source catalog; skipped">{f.unknown}</td>
+                              <td class="muted">{f.empty}</td>
+                            </tr>
+                          )}
+                        </For>
+                      </tbody>
+                    </table>
+                  </div>
+                </Show>
+                <Show when={r().ignored.length}>
+                  <p class="muted small">Ignored (name is not a locale): {r().ignored.map((p) => <><code>{p}</code> </>)}</p>
+                </Show>
+              </>
+            )}
+          </Show>
           <Show when={candidates()}>
             {(cs) => (
               <>

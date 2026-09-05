@@ -87,7 +87,7 @@ All `/api/*` endpoints use a `session` cookie. Non-GET requests must send `X-Req
 | `GET/POST /api/projects/:id/glossary`, `DELETE /api/projects/:id/glossary/:term` | translator adds/updates, manager deletes |
 | `GET /api/projects/:id/glossary/export?locale=`, `POST /api/projects/:id/glossary/import?locale=` (CSV body) | viewer / translator |
 | `POST /api/components/:id/autofill` `{locale,status,dry_run}` (exact translation-memory matches into untranslated units) | translator |
-| `POST /api/components/:id/import?locale=` (raw file body) | manager |
+| `POST /api/components/:id/import?locale=` (raw file body; returns `{imported,unknown,empty}`) | manager |
 | `GET /api/components/:id/export?locale=` | viewer |
 | `PUT /api/units/:id/translations/:locale` `{value,status,version}` | translator (`reviewed` needs manager) |
 | `POST /api/units/:id/suggest` `{provider: openai\|google, locale}` | translator |

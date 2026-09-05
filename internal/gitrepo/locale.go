@@ -38,9 +38,12 @@ func ParseLocaleName(raw string) (code, name string, ok bool) {
 type LocaleFile struct {
 	Path    string // repository-relative path
 	Raw     string // locale as spelled in the file name ("" for a default file such as values/strings.xml)
-	Code    string // canonical BCP 47 code ("" for a default file)
+	Code    string // canonical BCP 47 code ("" for a default file or an unrecognized name)
 	Default bool   // file without a locale qualifier (Android values/)
 }
+
+// Recognized reports whether the file maps to a locale (or is the default file).
+func (f LocaleFile) Recognized() bool { return f.Default || f.Code != "" }
 
 // LocaleFiles lists the files in the checkout that match pattern, e.g.
 // "locales/{locale}.json", "i18n/{locale}/messages.json" or
@@ -84,10 +87,9 @@ func (r Repository) LocaleFiles(pattern string) ([]LocaleFile, error) {
 			continue
 		}
 		raw := name[len(segPrefix) : len(name)-len(segSuffix)]
-		code, _, ok := ParseLocaleName(raw)
-		if !ok {
-			continue
-		}
+		// Unrecognized names (index, ja-KS, kab-KAB) are returned with an empty
+		// code so callers can report that they were ignored.
+		code, _, _ := ParseLocaleName(raw)
 		if p := joinPattern(dir, name) + rest; r.isFile(p) {
 			out = append(out, LocaleFile{Path: p, Raw: raw, Code: code})
 		}
@@ -116,7 +118,7 @@ func FindLocaleFile(files []LocaleFile, locale string) *LocaleFile {
 	var byBase *LocaleFile
 	for i := range files {
 		f := &files[i]
-		if f.Default {
+		if f.Default || f.Code == "" {
 			continue
 		}
 		if f.Code == locale {

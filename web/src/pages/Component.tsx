@@ -120,7 +120,7 @@ export function ComponentPage() {
     if (!file) return notify("choose a file");
     const ok = await run(async () => {
       const r = await api.importFile(id(), loc, file);
-      notify(`Imported ${r.imported} entries into ${loc}`, true);
+      notify(`Imported ${r.imported} entries into ${loc}${r.unknown ? `; ${r.unknown} key(s) not in the source catalog were skipped` : ""}`, true);
     });
     if (ok) { form.reset(); refetchDetail(); refetchStats(); refetchUnits(); refetchActivity(); }
   };

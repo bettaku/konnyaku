@@ -196,7 +196,10 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("target import before source must fail: %d", code)
 	}
 	admin.must(200, "POST", cpath+"/import?locale=en", []byte(`{"hello":"Hello","menu":{"file":"File"}}`))
-	admin.must(200, "POST", cpath+"/import?locale=ja", []byte(`{"hello":"こんにちは","menu":{"file":"File"}}`))
+	imp := admin.must(200, "POST", cpath+"/import?locale=ja", []byte(`{"hello":"こんにちは","menu":{"file":"File"},"extra":"unknown key","blank":""}`))
+	if imp["imported"] != float64(2) || imp["unknown"] != float64(2) {
+		t.Fatalf("divergent target import: %v", imp)
+	}
 
 	_, raw := trans.do("GET", cpath+"/units?locale=ja", nil, nil)
 	var page struct {
@@ -222,7 +225,8 @@ func TestEndToEnd(t *testing.T) {
 	trans.must(400, "PUT", "/api/units/"+itoa(u.ID)+"/translations/en", map[string]any{"value": "x", "version": 0})
 
 	_, out := trans.do("GET", cpath+"/export?locale=ja", nil, nil)
-	if string(out) != "{\n  \"hello\": \"こんにちは\",\n  \"menu\": {\n    \"file\": \"ファイル\"\n  }\n}\n" {
+	// The target document is the export template, so keys unknown to the source survive untouched.
+	if string(out) != "{\n  \"blank\": \"\",\n  \"extra\": \"unknown key\",\n  \"hello\": \"こんにちは\",\n  \"menu\": {\n    \"file\": \"ファイル\"\n  }\n}\n" {
 		t.Fatalf("export: %s", out)
 	}
 
@@ -368,7 +372,9 @@ func TestRepositorySync(t *testing.T) {
 	dir := filepath.Join(s.Config.RepositoryRoot, itoa(rid))
 	files := map[string]string{
 		"locales/en.json":               `{"hello":"Hello","bye":"Bye"}`,
-		"locales/ja.json":               `{"hello":"こんにちは","bye":""}`,
+		"locales/ja.json":               `{"hello":"こんにちは","bye":"","stale":"gone"}`,
+		"locales/ja-KS.json":            `{"hello":"まいど"}`,
+		"locales/fr.json":               `{"hello":`,
 		"locales/pt_BR.json":            `{"hello":"Olá","bye":"Tchau"}`,
 		"locales/index.json":            `{"x":"y"}`,
 		"res/values/strings.xml":        `<resources><string name="a">A</string></resources>`,
@@ -384,15 +390,27 @@ func TestRepositorySync(t *testing.T) {
 		}
 	}
 	_, raw := admin.do("GET", "/api/repositories/"+itoa(rid)+"/scan", nil, nil)
-	if !strings.Contains(string(raw), `"locales":["en","ja","pt-BR"]`) || !strings.Contains(string(raw), `"locales":["zh-CN"]`) {
+	if !strings.Contains(string(raw), `"locales":["en","fr","ja","pt-BR"]`) || !strings.Contains(string(raw), `"locales":["zh-CN"]`) {
 		t.Fatalf("scan: %s", raw)
 	}
 	web := admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "web", "name": "Web", "format": "json", "repository_id": rid, "file_pattern": "locales/{locale}.json"})
 	android := admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "app", "name": "App", "format": "android", "repository_id": rid, "file_pattern": "res/values-{locale}/strings.xml"})
 	res := admin.must(200, "POST", "/api/repositories/"+itoa(rid)+"/git/sync", map[string]string{})
-	imported, _ := res["imported"].(map[string]any)
-	if imported["web/en-US"] != float64(2) || imported["web/ja"] != float64(1) || imported["web/pt-BR"] != float64(2) || imported["app/en-US"] != float64(1) || imported["app/zh-CN"] != float64(1) {
-		t.Fatalf("sync: %v", res)
+	sync, _ := json.Marshal(res["sync"])
+	for _, want := range []string{
+		`{"component":"web","empty":0,"imported":2,"locale":"en-US","path":"locales/en.json","unknown":0}`,
+		`{"component":"web","empty":1,"imported":1,"locale":"ja","path":"locales/ja.json","unknown":1}`,
+		`{"component":"web","empty":0,"imported":2,"locale":"pt-BR","path":"locales/pt_BR.json","unknown":0}`,
+		`{"component":"app","empty":0,"imported":1,"locale":"zh-CN","path":"res/values-zh-rCN/strings.xml","unknown":0}`,
+		`"ignored":["locales/index.json","locales/ja-KS.json"]`,
+		`"errors":["locales/fr.json: invalid JSON"]`,
+	} {
+		if !strings.Contains(string(sync), want) {
+			t.Fatalf("sync result lacks %s:\n%s", want, sync)
+		}
+	}
+	if strings.Contains(string(sync), `"locale":"fr"`) {
+		t.Fatalf("failed file must not be listed as imported:\n%s", sync)
 	}
 	// Locales from the repository were registered and progress reflects the files.
 	_, raw = admin.do("GET", ppath, nil, nil)

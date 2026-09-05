@@ -34,7 +34,7 @@ Git 連携はプロジェクト単位の「リポジトリ」で設定します�
 
 1. プロジェクト画面でリポジトリを接続し、リポジトリ画面で **Clone** します。
 2. **Detect translation files** で checkout 内の翻訳ファイルを検出します。`dir/{locale}.ext`、`dir/{locale}/file.ext`、`values-{locale}/strings.xml` の配置を認識し、候補からコンポーネントを作成できます。未登録のロケールは先にロケール管理で追加してください。既存コンポーネントは設定画面でリポジトリとファイルパターンを紐付けられます。
-3. **Sync from checkout** で、リポジトリに紐付く全コンポーネントについて、原文ファイルと checkout に存在する全ロケールファイルを取り込みます。検出結果からコンポーネントを作成した場合は自動で実行されます。ファイル名の `ja` と登録ロケール `ja-JP` のような差、`en_US` 形式、Android の `values-zh-rCN` / 原文の `values/strings.xml` は自動で対応付けられ、リポジトリにあるロケールは未登録でも自動登録されます。空の値（PO の空 msgstr など）は未翻訳として扱われます。
+3. **Sync from checkout** で、リポジトリに紐付く全コンポーネントについて、原文ファイルと checkout に存在する全ロケールファイルを取り込みます。検出結果からコンポーネントを作成した場合は自動で実行されます。ファイル名の `ja` と登録ロケール `ja-JP` のような差、`en_US` 形式、Android の `values-zh-rCN` / 原文の `values/strings.xml` は自動で対応付けられ、リポジトリにあるロケールは未登録でも自動登録されます。空の値（PO の空 msgstr など）は未翻訳として扱われ、原文に無いキーはスキップして件数を報告します（ファイル全体は拒否しません）。同期はファイル単位で継続し、結果はリポジトリ画面の「Sync report」に取込件数・未知キー数・無視したファイル・エラーとして表示されます。1 ファイル 20,000 エントリまでで、数千エントリのファイルが数十個あるリポジトリでは同期に数十秒かかります。
 4. 翻訳後、**Open draft pull request** を押すと、pull → `konnyaku/translations-<UTC時刻>` ブランチ作成 → 全対象ロケールをエクスポート → commit → push → 追跡ブランチ向けのドラフトPR作成を行い、checkoutは追跡ブランチへ戻ります。変更が無い場合はエラーで止まります。追跡ブランチへ直接 commit / push する操作も用意しています。[GitHub PR API](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)
 
 WebhookのPayload URLは `https://公開ホスト/webhooks/github`、Content typeはJSON、イベントはpushです。`GITHUB_WEBHOOK_SECRET` と同じ32文字以上のランダム値をGitHubへ設定します。署名を検証し、登録済みリポジトリURL・追跡ブランチに一致したイベントだけをDBキューへ保存します。Delivery IDで重複を排除します。[署名検証](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)

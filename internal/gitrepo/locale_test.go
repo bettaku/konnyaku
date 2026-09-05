@@ -33,8 +33,13 @@ func TestLocaleFilesAndFind(t *testing.T) {
 		}
 	}
 	files, err := r.LocaleFiles("locales/{locale}.json")
-	if err != nil || len(files) != 3 {
+	if err != nil || len(files) != 4 {
 		t.Fatalf("locales: %+v %v", files, err)
+	}
+	for _, f := range files {
+		if f.Recognized() == (f.Raw == "index") {
+			t.Errorf("recognition: %+v", f)
+		}
 	}
 	if f := FindLocaleFile(files, "ja-JP"); f == nil || f.Path != "locales/ja.json" {
 		t.Errorf("ja-JP should fall back to ja.json: %+v", f)
@@ -53,7 +58,7 @@ func TestLocaleFilesAndFind(t *testing.T) {
 		t.Fatalf("directory layout: %+v %v", files, err)
 	}
 	files, err = r.LocaleFiles("res/values-{locale}/strings.xml")
-	if err != nil || len(files) != 3 {
+	if err != nil || len(files) != 4 {
 		t.Fatalf("android: %+v %v", files, err)
 	}
 	if f := FindLocaleFile(files, "en-US"); f == nil || !f.Default || f.Path != "res/values/strings.xml" {
