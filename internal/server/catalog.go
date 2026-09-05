@@ -30,11 +30,6 @@ func localeCode(v string) (string, error) {
 	return tag.String(), nil
 }
 
-// IsLocaleName reports whether a file or directory name is a canonical locale code.
-func IsLocaleName(v string) bool {
-	tag, err := language.Parse(v)
-	return err == nil && v != "" && len(v) <= 64 && tag.String() == v
-}
 func CreateUser(ctx context.Context, q *db.Queries, email, password, name string, admin bool) (db.User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	addr, err := mail.ParseAddress(email)

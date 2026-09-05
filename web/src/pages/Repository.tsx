@@ -1,5 +1,6 @@
 import { For, Show, createResource, createSignal } from "solid-js";
-import { A, useNavigate, useParams } from "@solidjs/router";
+import { useNavigate, useParams } from "@solidjs/router";
+import { A } from "@solidjs/router";
 import { api, type Candidate } from "../api";
 import { useAction, useSession } from "../session";
 import { Crumbs, Empty, formData } from "../ui";
@@ -44,8 +45,11 @@ export function RepositoryPage() {
   };
   const createFromCandidate = async (c: Candidate, e: SubmitEvent) => {
     const { data } = formData(e);
-    const ok = await run(() => api.createComponent(status()!.repository.project_id, { slug: data.slug, name: data.name, format: c.format, repository_id: id(), file_pattern: c.pattern }), "Component created");
-    if (ok) { setCandidates((cs) => cs?.filter((x) => x !== c) ?? null); refetch(); }
+    const ok = await run(() => api.createComponent(status()!.repository.project_id, { slug: data.slug, name: data.name, format: c.format, repository_id: id(), file_pattern: c.pattern }));
+    if (!ok) return;
+    setCandidates((cs) => cs?.filter((x) => x !== c) ?? null);
+    // Import the files right away so progress reflects the existing translations.
+    await action("sync");
   };
   const pullRequest = async (e: SubmitEvent) => {
     const { data } = formData(e);
@@ -96,7 +100,7 @@ export function RepositoryPage() {
                   <Show when={!s().checkout.exists} fallback={<button class="secondary" disabled={!!busy() || !user()?.admin} onClick={() => action("pull")}>Pull</button>}>
                     <button disabled={!!busy() || !user()?.admin} onClick={() => action("clone")}>Clone</button>
                   </Show>
-                  <button class="secondary" disabled={!!busy() || !s().checkout.exists} onClick={() => action("sync")} title="Import source and target files for attached components">Sync from checkout</button>
+                  <button class="secondary" disabled={!!busy() || !s().checkout.exists} onClick={() => action("sync")} title="Import the source file and every locale file found for the attached components">Sync from checkout</button>
                   <button class="secondary" disabled={!!busy() || !s().checkout.exists} onClick={scan}>Detect translation files</button>
                 </div>
                 <Show when={user()?.admin && s().checkout.exists}>
@@ -135,8 +139,8 @@ export function RepositoryPage() {
                           <div class="grow">
                             <code>{c.pattern}</code> <span class="badge">{c.format}</span>
                             <div class="small muted">
-                              locales: {c.locales.join(", ")}
-                              <Show when={unknownLocales(c).length}> — <span class="error">not defined: {unknownLocales(c).join(", ")}</span> (<A href="/locales">add locales</A>)</Show>
+                              locales in repository: {c.locales.join(", ")}
+                              <Show when={unknownLocales(c).length}> — {unknownLocales(c).join(", ")} will be registered on sync</Show>
                             </div>
                           </div>
                           <Show when={!attached()} fallback={<span class="badge reviewed">attached</span>}>

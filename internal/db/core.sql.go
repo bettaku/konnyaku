@@ -418,6 +418,20 @@ func (q *Queries) EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams
 	return result.RowsAffected(), nil
 }
 
+const ensureLocale = `-- name: EnsureLocale :exec
+INSERT INTO locales (code,name) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING
+`
+
+type EnsureLocaleParams struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+func (q *Queries) EnsureLocale(ctx context.Context, arg EnsureLocaleParams) error {
+	_, err := q.db.Exec(ctx, ensureLocale, arg.Code, arg.Name)
+	return err
+}
+
 const exactMemoryMatches = `-- name: ExactMemoryMatches :many
 SELECT u.id AS unit_id, u.key, coalesce((
  SELECT t.value FROM units u2 JOIN translations t ON t.unit_id=u2.id AND t.locale=$1

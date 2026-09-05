@@ -96,8 +96,7 @@ func TestScan(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	isLocale := func(v string) bool { return map[string]bool{"en": true, "ja": true, "de": true, "fr": true}[v] }
-	got, err := r.Scan(isLocale)
+	got, err := r.Scan()
 	if err != nil {
 		t.Fatal(err)
 	}

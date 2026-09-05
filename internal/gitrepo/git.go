@@ -334,8 +334,10 @@ type Candidate struct {
 }
 
 // Scan finds directories whose files (or sub-directories) are named after locale
-// codes and suggests {locale} file patterns for them. isLocale decides which names count.
-func (r Repository) Scan(isLocale func(string) bool) ([]Candidate, error) {
+// codes and suggests {locale} file patterns for them. Locales are reported in
+// canonical form; a values/strings.xml default file counts for Android layouts.
+func (r Repository) Scan() ([]Candidate, error) {
+	isLocale := func(v string) bool { _, _, ok := ParseLocaleName(v); return ok }
 	root, err := filepath.Abs(r.Dir())
 	if err != nil {
 		return nil, err
@@ -385,10 +387,16 @@ func (r Repository) Scan(isLocale func(string) bool) ([]Candidate, error) {
 		if ValidatePattern(pattern) != nil {
 			return nil
 		}
+		locale, _, _ = ParseLocaleName(locale)
 		c := found[pattern]
 		if c == nil {
 			c = &Candidate{Pattern: pattern, Format: format}
 			found[pattern] = c
+		}
+		for _, l := range c.Locales {
+			if l == locale {
+				return nil
+			}
 		}
 		c.Locales = append(c.Locales, locale)
 		return nil

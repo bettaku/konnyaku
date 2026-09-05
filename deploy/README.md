@@ -34,7 +34,7 @@ Git 連携はプロジェクト単位の「リポジトリ」で設定します�
 
 1. プロジェクト画面でリポジトリを接続し、リポジトリ画面で **Clone** します。
 2. **Detect translation files** で checkout 内の翻訳ファイルを検出します。`dir/{locale}.ext`、`dir/{locale}/file.ext`、`values-{locale}/strings.xml` の配置を認識し、候補からコンポーネントを作成できます。未登録のロケールは先にロケール管理で追加してください。既存コンポーネントは設定画面でリポジトリとファイルパターンを紐付けられます。
-3. **Sync from checkout** で、リポジトリに紐付く全コンポーネントの原文と対象ロケール（プロジェクトの対象ロケールに存在するファイルのみ）を取り込みます。
+3. **Sync from checkout** で、リポジトリに紐付く全コンポーネントについて、原文ファイルと checkout に存在する全ロケールファイルを取り込みます。検出結果からコンポーネントを作成した場合は自動で実行されます。ファイル名の `ja` と登録ロケール `ja-JP` のような差、`en_US` 形式、Android の `values-zh-rCN` / 原文の `values/strings.xml` は自動で対応付けられ、リポジトリにあるロケールは未登録でも自動登録されます。空の値（PO の空 msgstr など）は未翻訳として扱われます。
 4. 翻訳後、**Open draft pull request** を押すと、pull → `konnyaku/translations-<UTC時刻>` ブランチ作成 → 全対象ロケールをエクスポート → commit → push → 追跡ブランチ向けのドラフトPR作成を行い、checkoutは追跡ブランチへ戻ります。変更が無い場合はエラーで止まります。追跡ブランチへ直接 commit / push する操作も用意しています。[GitHub PR API](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request)
 
 WebhookのPayload URLは `https://公開ホスト/webhooks/github`、Content typeはJSON、イベントはpushです。`GITHUB_WEBHOOK_SECRET` と同じ32文字以上のランダム値をGitHubへ設定します。署名を検証し、登録済みリポジトリURL・追跡ブランチに一致したイベントだけをDBキューへ保存します。Delivery IDで重複を排除します。[署名検証](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
@@ -57,7 +57,7 @@ Googleは `GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION`（既定値global）�
 - 対象言語の取込文書をエクスポートのテンプレートに使うため、後から原文に追加されたキーとの完全な同期は未実装です。
 - ユーザー無効化・パスワード変更/リセット・招待・SSO・監査ログは未実装です。
 - Git操作は同期APIです。非同期ジョブ化・競合解決UI・GitHub App認証は未実装です。
-- Androidで原文が `values/strings.xml` にある配置（対象は `values-{locale}/`）と、`en_US.json` のようにロケール表記が正規形（`en-US`）と異なるファイル名は未対応です。
+- 進捗率は「translated または reviewed の件数 ÷ 原文の件数」です。原文と同じ文字列がコピーされている訳も翻訳済みとして数えます。needs review は棒グラフに別色で表示され、率には含まれません。
 - 機械翻訳の予算制御・再試行・プレースホルダー検査は未実装です。用語集は原文中の一致を示し訳語の有無を表示するだけで、保存を止めません。翻訳メモリは閲覧権限のあるプロジェクト間で `pg_trgm` の類似度により候補を出します（`003` マイグレーションが `CREATE EXTENSION pg_trgm` を実行するため、DBユーザーにその権限が必要です）。
 - 複数台運用、本番サービス・プロキシでの検証は残作業です。
 

@@ -21,7 +21,7 @@ Translation management server (in the spirit of Weblate / Crowdin) written in Go
 | Project glossary per locale, highlighted in source strings with a consistency check, CSV import/export | ✅ |
 | Machine translation: OpenAI-compatible chat API, Google Cloud Translation v3 | ✅ |
 | Repositories (project-level GitHub HTTPS remotes): clone / pull / sync / commit / push | ✅ |
-| Translation file auto-detection in a checkout (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`) | ✅ |
+| Translation file auto-detection in a checkout (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`); sync imports every locale file found, registering locales automatically, and tolerates `ja` vs `ja-JP`, `en_US` and Android `zh-rCN` spellings | ✅ |
 | GitHub push webhook → queued re-import of every attached component | ✅ |
 | "Publish translations": export on a fresh branch, push, open a draft pull request | ✅ |
 

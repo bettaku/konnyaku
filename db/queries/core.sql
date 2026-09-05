@@ -179,3 +179,5 @@ SELECT u.id AS unit_id, u.key, coalesce((
 FROM units u LEFT JOIN translations t0 ON t0.unit_id=u.id AND t0.locale=sqlc.arg(locale)
 WHERE u.component_id=sqlc.arg(component_id) AND t0.unit_id IS NULL AND u.source <> ''
 ORDER BY u.key;
+-- name: EnsureLocale :exec
+INSERT INTO locales (code,name) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING;
