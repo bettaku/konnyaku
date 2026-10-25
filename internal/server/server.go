@@ -64,10 +64,15 @@ func New(pool *pgxpool.Pool, cfg config.Config) *Server {
 	e.HTTPErrorHandler = func(c *echo.Context, err error) {
 		code, message := 500, "internal server error"
 		var he *echo.HTTPError
+		var sc echo.HTTPStatusCoder
 		var pe *pgconn.PgError
 		if errors.As(err, &he) {
 			code = he.Code
 			message = he.Message
+		} else if errors.As(err, &sc) {
+			// Router errors such as echo.ErrNotFound are not *echo.HTTPError.
+			code = sc.StatusCode()
+			message = strings.ToLower(http.StatusText(code))
 		} else if errors.Is(err, pgx.ErrNoRows) {
 			code = 404
 			message = "not found"

@@ -603,3 +603,24 @@ func TestGlossaryCSVFormula(t *testing.T) {
 		}
 	}
 }
+
+func TestRouterErrors(t *testing.T) {
+	_, ts := newTestServer(t)
+	c := &client{t: t, base: ts.URL}
+	// Router errors keep their status instead of becoming 500 (e.g. a mistyped webhook URL).
+	for _, tc := range []struct {
+		method, path string
+		code         int
+		message      string
+	}{
+		{"POST", "/webhook/github", 404, "not found"},
+		{"GET", "/webhooks/github", 405, "method not allowed"},
+	} {
+		code, raw := c.do(tc.method, tc.path, nil, nil)
+		var out map[string]string
+		_ = json.Unmarshal(raw, &out)
+		if code != tc.code || out["error"] != tc.message {
+			t.Fatalf("%s %s: want %d %q got %d %s", tc.method, tc.path, tc.code, tc.message, code, raw)
+		}
+	}
+}
