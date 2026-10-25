@@ -532,3 +532,66 @@ func TestWebhook(t *testing.T) {
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+func TestRepositoryBusy(t *testing.T) {
+	s, ts := newTestServer(t)
+	admin := login(t, ts.URL, "admin@example.com", "admin-password-123")
+	admin.must(200, "POST", "/api/locales", map[string]string{"code": "en-US", "name": "English (US)"})
+	p := admin.must(201, "POST", "/api/projects", map[string]string{"slug": "busy", "name": "Busy", "source_locale": "en-US"})
+	ppath := "/api/projects/" + itoa(int64(p["id"].(float64)))
+	r := admin.must(201, "POST", ppath+"/repositories", map[string]string{"url": "https://github.com/owner/repo", "branch": "main"})
+	rid := int64(r["id"].(float64))
+	// Hold the repository lock the way a running operation would.
+	ctx := context.Background()
+	conn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err = conn.Exec(ctx, "SELECT pg_advisory_lock($1)", -rid); err != nil {
+		t.Fatal(err)
+	}
+	// A second operation is rejected instead of waiting on a pool connection.
+	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/git/sync", map[string]string{}, nil); code != 429 {
+		t.Fatalf("busy sync: %d %s", code, raw)
+	}
+	// Unrelated requests keep being served while the repository is locked.
+	if code, raw := admin.do("GET", ppath, nil, nil); code != 200 {
+		t.Fatalf("project read during lock: %d %s", code, raw)
+	}
+	if _, err = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", -rid); err != nil {
+		t.Fatal(err)
+	}
+	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/git/sync", map[string]string{}, nil); code == 429 {
+		t.Fatalf("sync after release must not report busy: %d %s", code, raw)
+	}
+}
+
+func TestGlossaryCSVFormula(t *testing.T) {
+	_, ts := newTestServer(t)
+	admin := login(t, ts.URL, "admin@example.com", "admin-password-123")
+	admin.must(200, "POST", "/api/locales", map[string]string{"code": "en-US", "name": "English (US)"})
+	admin.must(200, "POST", "/api/locales", map[string]string{"code": "ja", "name": "Japanese"})
+	p := admin.must(201, "POST", "/api/projects", map[string]string{"slug": "csv", "name": "CSV", "source_locale": "en-US"})
+	ppath := "/api/projects/" + itoa(int64(p["id"].(float64)))
+	admin.must(204, "PUT", ppath+"/locales/ja", nil)
+	admin.must(200, "POST", ppath+"/glossary", map[string]string{"locale": "ja", "term": "=SUM(A1)", "translation": "+1", "note": "@ref"})
+	admin.must(200, "POST", ppath+"/glossary", map[string]string{"locale": "ja", "term": "-ing", "translation": "接尾辞", "note": "quote \" and , comma"})
+	_, raw := admin.do("GET", ppath+"/glossary/export?locale=ja", nil, nil)
+	for _, want := range []string{"'=SUM(A1),ja,'+1,'@ref\n", "'-ing,ja,接尾辞,\"quote \"\" and , comma\"\n"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("export must not emit formula cells, want %q:\n%s", want, raw)
+		}
+	}
+	// The escape is symmetric, so re-importing the export restores the values.
+	res := admin.must(200, "POST", ppath+"/glossary/import", raw)
+	if res["imported"] != float64(2) {
+		t.Fatalf("re-import: %v", res)
+	}
+	_, raw = admin.do("GET", ppath+"/glossary?locale=ja", nil, nil)
+	for _, want := range []string{`"term":"=SUM(A1)"`, `"translation":"+1"`, `"note":"@ref"`, `"term":"-ing"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("round trip changed values, want %s:\n%s", want, raw)
+		}
+	}
+}

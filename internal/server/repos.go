@@ -31,10 +31,32 @@ func (s *Server) checkout(r db.Repository) gitrepo.Repository {
 	return gitrepo.Repository{Root: s.Config.RepositoryRoot, ID: r.ID, URL: r.Url, Branch: r.Branch, Token: s.Config.GitHubToken}
 }
 
-// withRepository serializes Git work per repository across processes.
+// errRepositoryBusy reports that another operation holds the repository. It is
+// an HTTPError so handlers can return it unchanged.
+var errRepositoryBusy = echo.NewHTTPError(429, "another repository operation is running, try again")
+
+// gitError reports Git and checkout failures as conflicts while leaving
+// errRepositoryBusy and other HTTP errors with their own status.
+func gitError(err error) error {
+	var he *echo.HTTPError
+	if err == nil || errors.As(err, &he) {
+		return err
+	}
+	return echo.NewHTTPError(409, err.Error())
+}
+
+// withRepository serializes Git work per repository across processes. Work is
+// admitted before a pool connection is taken and the lock is never waited on,
+// so queued operations cannot hold the connections the running one still needs.
 func (s *Server) withRepository(ctx context.Context, r db.Repository, fn func(gitrepo.Repository) error) error {
 	if _, err := gitrepo.GitHubRepository(r.Url); err != nil {
 		return err
+	}
+	select {
+	case s.repoSlots <- struct{}{}:
+		defer func() { <-s.repoSlots }()
+	default:
+		return errRepositoryBusy
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -44,8 +66,12 @@ func (s *Server) withRepository(ctx context.Context, r db.Repository, fn func(gi
 	}
 	defer tx.Rollback(context.Background())
 	// Negative lock IDs reserve a namespace separate from catalog edit locks.
-	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", -r.ID); err != nil {
+	var locked bool
+	if err = tx.QueryRow(ctx, "SELECT pg_try_advisory_xact_lock($1)", -r.ID).Scan(&locked); err != nil {
 		return err
+	}
+	if !locked {
+		return errRepositoryBusy
 	}
 	return fn(s.checkout(r))
 }
@@ -137,7 +163,7 @@ func (s *Server) scanRepository(c *echo.Context) error {
 		return e
 	})
 	if err != nil {
-		return echo.NewHTTPError(409, err.Error())
+		return gitError(err)
 	}
 	if candidates == nil {
 		candidates = []gitrepo.Candidate{}
@@ -322,12 +348,8 @@ func (s *Server) repositoryAction(c *echo.Context) error {
 			return echo.NewHTTPError(400, "unknown repository action")
 		}
 	})
-	var he *echo.HTTPError
-	if errors.As(err, &he) {
-		return err
-	}
 	if err != nil {
-		return echo.NewHTTPError(409, err.Error())
+		return gitError(err)
 	}
 	result["status"] = "done"
 	return c.JSON(200, result)
@@ -386,7 +408,7 @@ func (s *Server) repositoryPullRequest(c *echo.Context) error {
 		return echo.NewHTTPError(409, "no translation changes to propose")
 	}
 	if err != nil {
-		return echo.NewHTTPError(409, err.Error())
+		return gitError(err)
 	}
 	return c.JSON(201, map[string]string{"url": url, "branch": branch})
 }
@@ -507,6 +529,11 @@ func (s *Server) processDelivery(ctx context.Context) error {
 			}
 			return e
 		})
+		if errors.Is(err, errRepositoryBusy) {
+			// Roll the claim back so the next tick redelivers the event
+			// instead of recording a failure that needs a manual retry.
+			return nil
+		}
 		if err != nil {
 			status = "failed"
 			message = "repository synchronization failed: " + err.Error()

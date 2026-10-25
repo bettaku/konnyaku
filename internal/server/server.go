@@ -31,10 +31,14 @@ type Server struct {
 	Config     config.Config
 	Echo       *echo.Echo
 	loginSlots chan struct{}
+	repoSlots  chan struct{}
 }
 
 func New(pool *pgxpool.Pool, cfg config.Config) *Server {
-	s := &Server{Pool: pool, Q: db.New(pool), Config: cfg, loginSlots: make(chan struct{}, 4)}
+	// A repository operation can hold three pool connections at once (queue
+	// claim, repository lock and catalog import), so admit far fewer than the
+	// pool holds and let the rest fail fast instead of waiting on a connection.
+	s := &Server{Pool: pool, Q: db.New(pool), Config: cfg, loginSlots: make(chan struct{}, 4), repoSlots: make(chan struct{}, 3)}
 	e := echo.NewWithConfig(echo.Config{IPExtractor: echo.ExtractIPDirect()})
 	s.Echo = e
 	e.Use(middleware.Recover(), middleware.BodyLimit(5<<20))

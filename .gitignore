@@ -40,3 +40,4 @@ web/node_modules/
 web/dist/
 .pnpm-store/
 .devcontainer/secrets.env
+*-security-review.md
