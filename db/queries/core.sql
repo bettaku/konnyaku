@@ -179,3 +179,19 @@ SELECT u.id AS unit_id, u.key, coalesce((
 FROM units u LEFT JOIN translations t0 ON t0.unit_id=u.id AND t0.locale=sqlc.arg(locale)
 WHERE u.component_id=sqlc.arg(component_id) AND t0.unit_id IS NULL AND u.source <> ''
 ORDER BY u.key;
+-- name: EnsureLocale :exec
+INSERT INTO locales (code,name) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING;
+
+-- name: DeleteImportIssues :exec
+DELETE FROM import_issues WHERE component_id=$1 AND locale=$2;
+-- name: AddImportIssue :exec
+INSERT INTO import_issues (component_id,locale,key,value) VALUES ($1,$2,$3,$4)
+ON CONFLICT (component_id,locale,key) DO UPDATE SET value=excluded.value, seen_at=now();
+-- name: PruneImportIssues :exec
+DELETE FROM import_issues i WHERE i.component_id=$1 AND EXISTS (SELECT 1 FROM units u WHERE u.component_id=i.component_id AND u.key=i.key);
+-- name: ListImportIssues :many
+SELECT * FROM import_issues WHERE component_id=$1 ORDER BY locale, key;
+-- name: DismissImportIssue :execrows
+DELETE FROM import_issues WHERE component_id=$1 AND locale=$2 AND (sqlc.arg(key)::text = '' OR key=sqlc.arg(key));
+-- name: ProjectImportIssueCounts :many
+SELECT i.component_id, count(*)::bigint AS issues FROM import_issues i JOIN components c ON c.id=i.component_id WHERE c.project_id=$1 GROUP BY i.component_id;

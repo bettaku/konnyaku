@@ -136,3 +136,10 @@ mark.term { background: #fff3bf; color: inherit; border-radius: 2px; padding: 0 
 .diff del { background: #fdecea; color: var(--danger); text-decoration: line-through; }
 .diff ins { background: #e8f5ee; color: var(--ok); text-decoration: none; }
 .diff { white-space: pre-wrap; word-break: break-word; }
+.ml { margin-left: .4rem; }
+details.issues { border-color: #f0dfa5; background: #fffbf0; }
+details.issues > summary { color: var(--warn); }
+
+.publication-diff { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 28rem; overflow: auto; }
+.publication-diff ins { background: #d3f5df; color: #175e34; text-decoration: none; }
+.publication-diff del { background: #ffe0df; color: #8b2424; }

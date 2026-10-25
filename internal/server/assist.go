@@ -210,6 +210,29 @@ func (s *Server) autofill(c *echo.Context) error {
 
 // ---- glossary CSV --------------------------------------------------------------
 
+// csvCell keeps a stored string from being evaluated as a formula when the
+// export is opened in a spreadsheet. csvValue reverses it on import, so a term
+// such as "-ing" survives a download and upload round trip unchanged.
+func csvCell(v string) string {
+	if v != "" && formulaLead(v[0]) {
+		return "'" + v
+	}
+	return v
+}
+func csvValue(v string) string {
+	if len(v) > 1 && v[0] == '\'' && formulaLead(v[1]) {
+		return v[1:]
+	}
+	return v
+}
+func formulaLead(b byte) bool {
+	switch b {
+	case '=', '+', '-', '@', '\t', '\r':
+		return true
+	}
+	return false
+}
+
 func (s *Server) exportGlossary(c *echo.Context) error {
 	pid, err := s.projectID(c, "viewer")
 	if err != nil {
@@ -229,7 +252,7 @@ func (s *Server) exportGlossary(c *echo.Context) error {
 	w := csv.NewWriter(&buf)
 	_ = w.Write([]string{"term", "locale", "translation", "note"})
 	for _, r := range rows {
-		_ = w.Write([]string{r.Term, r.Locale, r.Translation, r.Note})
+		_ = w.Write([]string{csvCell(r.Term), r.Locale, csvCell(r.Translation), csvCell(r.Note)})
 	}
 	w.Flush()
 	name := "glossary.csv"
@@ -296,7 +319,7 @@ func (s *Server) importGlossary(c *echo.Context) error {
 	}
 	field := func(rec []string, i int) string {
 		if i < len(rec) {
-			return strings.TrimSpace(rec[i])
+			return csvValue(strings.TrimSpace(rec[i]))
 		}
 		return ""
 	}

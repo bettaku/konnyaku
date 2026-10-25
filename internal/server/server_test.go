@@ -72,8 +72,9 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	if err = migrations.Apply(ctx, pool); err != nil {
 		t.Fatalf("migration must be idempotent: %v", err)
 	}
-	cfg := config.Config{Address: "127.0.0.1:0", DatabaseURL: dsn, PublicURL: "http://konnyaku.test", RepositoryRoot: t.TempDir(), WebhookSecret: secret}
+	cfg := config.Config{Address: "127.0.0.1:0", DatabaseURL: dsn, PublicURL: "http://konnyaku.test", WebhookSecret: secret}
 	s := New(pool, cfg)
+	mockGitHub(s, map[string]string{})
 	ts := httptest.NewServer(s.Echo)
 	t.Cleanup(ts.Close)
 	if _, err = CreateUser(ctx, db.New(pool), "admin@example.com", "admin-password-123", "Admin", true); err != nil {
@@ -195,7 +196,10 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("target import before source must fail: %d", code)
 	}
 	admin.must(200, "POST", cpath+"/import?locale=en", []byte(`{"hello":"Hello","menu":{"file":"File"}}`))
-	admin.must(200, "POST", cpath+"/import?locale=ja", []byte(`{"hello":"こんにちは","menu":{"file":"File"}}`))
+	imp := admin.must(200, "POST", cpath+"/import?locale=ja", []byte(`{"hello":"こんにちは","menu":{"file":"File"},"extra":"unknown key","blank":""}`))
+	if imp["imported"] != float64(2) || imp["unknown"] != float64(2) {
+		t.Fatalf("divergent target import: %v", imp)
+	}
 
 	_, raw := trans.do("GET", cpath+"/units?locale=ja", nil, nil)
 	var page struct {
@@ -221,7 +225,8 @@ func TestEndToEnd(t *testing.T) {
 	trans.must(400, "PUT", "/api/units/"+itoa(u.ID)+"/translations/en", map[string]any{"value": "x", "version": 0})
 
 	_, out := trans.do("GET", cpath+"/export?locale=ja", nil, nil)
-	if string(out) != "{\n  \"hello\": \"こんにちは\",\n  \"menu\": {\n    \"file\": \"ファイル\"\n  }\n}\n" {
+	// The target document is the export template, so keys unknown to the source survive untouched.
+	if string(out) != "{\n  \"blank\": \"\",\n  \"extra\": \"unknown key\",\n  \"hello\": \"こんにちは\",\n  \"menu\": {\n    \"file\": \"ファイル\"\n  }\n}\n" {
 		t.Fatalf("export: %s", out)
 	}
 
@@ -232,6 +237,19 @@ func TestEndToEnd(t *testing.T) {
 	units = page.Units
 	if units[0].Status != "needs_review" || units[1].Status != "reviewed" {
 		t.Fatalf("statuses after source change: %+v", units)
+	}
+	// Unknown keys are reported per component and cleared when the source gains them.
+	_, raw = trans.do("GET", cpath+"/issues", nil, nil)
+	if !strings.Contains(string(raw), `"key":"/extra","value":"unknown key"`) || !strings.Contains(string(raw), `"key":"/blank"`) {
+		t.Fatalf("issues: %s", raw)
+	}
+	_, raw = trans.do("GET", ppath+"/issues", nil, nil)
+	if !strings.Contains(string(raw), `"issues":2`) {
+		t.Fatalf("project issue counts: %s", raw)
+	}
+	trans.must(403, "POST", cpath+"/issues/dismiss", map[string]string{"locale": "ja", "key": "/blank"})
+	if d := admin.must(200, "POST", cpath+"/issues/dismiss", map[string]string{"locale": "ja", "key": "/blank"}); d["dismissed"] != float64(1) {
+		t.Fatalf("dismiss: %v", d)
 	}
 	// Server-side search, status filter and count.
 	_, raw = trans.do("GET", cpath+"/units?locale=ja&q=%25file&status=reviewed", nil, nil)
@@ -285,6 +303,14 @@ func TestEndToEnd(t *testing.T) {
 	co2 := admin.must(201, "POST", ppath+"/components", map[string]string{"slug": "docs", "name": "Docs", "format": "json"})
 	c2path := "/api/components/" + itoa(int64(co2["id"].(float64)))
 	admin.must(200, "POST", c2path+"/import?locale=en", []byte(`{"open":"Open file","other":"Something unrelated"}`))
+	admin.must(200, "POST", c2path+"/import?locale=ja", []byte(`{"open":"ファイルを開く","later":"後で追加されるキー"}`))
+	if _, raw = trans.do("GET", c2path+"/issues", nil, nil); !strings.Contains(string(raw), `"key":"/later"`) {
+		t.Fatalf("docs issues: %s", raw)
+	}
+	admin.must(200, "POST", c2path+"/import?locale=en", []byte(`{"open":"Open file","other":"Something unrelated","later":"Added later"}`))
+	if _, raw = trans.do("GET", c2path+"/issues", nil, nil); string(raw) != "[]\n" {
+		t.Fatalf("issues should be resolved by the source import: %s", raw)
+	}
 	_, raw = trans.do("GET", c2path+"/units?locale=ja", nil, nil)
 	_ = json.Unmarshal(raw, &page)
 	var openID int64
@@ -356,8 +382,99 @@ func TestEndToEnd(t *testing.T) {
 	admin.must(401, "GET", "/api/me", nil)
 }
 
+func TestRepositorySync(t *testing.T) {
+	s, ts := newTestServer(t)
+	admin := login(t, ts.URL, "admin@example.com", "admin-password-123")
+	admin.must(200, "POST", "/api/locales", map[string]string{"code": "en-US", "name": "English (US)"})
+	p := admin.must(201, "POST", "/api/projects", map[string]string{"slug": "demo", "name": "Demo", "source_locale": "en-US"})
+	ppath := "/api/projects/" + itoa(int64(p["id"].(float64)))
+	r := admin.must(201, "POST", ppath+"/repositories", map[string]string{"url": "https://github.com/owner/repo", "branch": "main"})
+	rid := int64(r["id"].(float64))
+	files := map[string]string{
+		"locales/en.json":               `{"hello":"Hello","bye":"Bye"}`,
+		"locales/ja.json":               `{"hello":"こんにちは","bye":"","stale":"gone"}`,
+		"locales/ja-KS.json":            `{"hello":"まいど"}`,
+		"locales/fr.json":               `{"hello":`,
+		"locales/pt_BR.json":            `{"hello":"Olá","bye":"Tchau"}`,
+		"locales/index.json":            `{"x":"y"}`,
+		"res/values/strings.xml":        `<resources><string name="a">A</string></resources>`,
+		"res/values-zh-rCN/strings.xml": `<resources><string name="a">甲</string></resources>`,
+	}
+	remote := mockGitHub(s, files)
+
+	_, raw := admin.do("GET", "/api/repositories/"+itoa(rid)+"/scan", nil, nil)
+	if !strings.Contains(string(raw), `"locales":["en","fr","ja","pt-BR"]`) || !strings.Contains(string(raw), `"locales":["zh-CN"]`) {
+		t.Fatalf("scan: %s", raw)
+	}
+	web := admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "web", "name": "Web", "format": "json", "repository_id": rid, "file_pattern": "locales/{locale}.json"})
+	android := admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "app", "name": "App", "format": "android", "repository_id": rid, "file_pattern": "res/values-{locale}/strings.xml"})
+	res := admin.must(200, "POST", "/api/repositories/"+itoa(rid)+"/sync", map[string]string{})
+	sync, _ := json.Marshal(res["sync"])
+	for _, want := range []string{
+		`{"component":"web","empty":0,"imported":2,"locale":"en-US","path":"locales/en.json","unknown":0}`,
+		`{"component":"web","empty":1,"imported":1,"locale":"ja","path":"locales/ja.json","unknown":1}`,
+		`{"component":"web","empty":0,"imported":2,"locale":"pt-BR","path":"locales/pt_BR.json","unknown":0}`,
+		`{"component":"app","empty":0,"imported":1,"locale":"zh-CN","path":"res/values-zh-rCN/strings.xml","unknown":0}`,
+		`"ignored":["locales/index.json","locales/ja-KS.json"]`,
+		`"errors":["locales/fr.json: invalid JSON"]`,
+	} {
+		if !strings.Contains(string(sync), want) {
+			t.Fatalf("sync result lacks %s:\n%s", want, sync)
+		}
+	}
+	if strings.Contains(string(sync), `"locale":"fr"`) {
+		t.Fatalf("failed file must not be listed as imported:\n%s", sync)
+	}
+	// Locales from the repository were registered and progress reflects the files.
+	_, raw = admin.do("GET", ppath, nil, nil)
+	for _, code := range []string{`"code":"ja"`, `"code":"pt-BR"`, `"code":"zh-CN"`} {
+		if !strings.Contains(string(raw), code) {
+			t.Fatalf("project locales: %s", raw)
+		}
+	}
+	_, raw = admin.do("GET", "/api/components/"+itoa(int64(web["id"].(float64)))+"/stats", nil, nil)
+	if !strings.Contains(string(raw), `{"locale":"ja","total":2,"translated":1,`) || !strings.Contains(string(raw), `{"locale":"pt-BR","total":2,"translated":2,`) {
+		t.Fatalf("stats: %s", raw)
+	}
+	_, raw = admin.do("GET", "/api/components/"+itoa(int64(android["id"].(float64)))+"/stats", nil, nil)
+	if !strings.Contains(string(raw), `{"locale":"zh-CN","total":1,"translated":1,`) {
+		t.Fatalf("android stats: %s", raw)
+	}
+	// Export keeps existing spellings and creates new files following them.
+	admin.must(204, "PUT", ppath+"/locales/es-MX", nil)
+	delete(remote.Files, "locales/fr.json") // Invalid files must not become publication baselines.
+	remote.refresh()
+	repo := db.Repository{ID: rid, ProjectID: int64(p["id"].(float64)), Url: "https://github.com/owner/repo.git", Branch: "main"}
+	g := s.github(repo)
+	snapshot, err := g.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := s.exportRepository(context.Background(), repo, g, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, c := range changes {
+		paths = append(paths, c.Path)
+	}
+	joined := strings.Join(paths, " ")
+	for _, want := range []string{"locales/ja.json", "locales/pt_BR.json", "locales/es_MX.json", "res/values-es-rMX/strings.xml"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("export paths: %s", joined)
+		}
+	}
+	for _, c := range changes {
+		if c.Path == "locales/ja.json" && (!strings.Contains(c.Content, "こんにちは") || !strings.Contains(c.Content, `"bye": ""`)) {
+			t.Fatalf("exported ja.json: %s", c.Content)
+		}
+	}
+
+}
+
 func TestWebhook(t *testing.T) {
-	_, ts := newTestServer(t)
+	s, ts := newTestServer(t)
+	mockGitHub(s, map[string]string{})
 	admin := login(t, ts.URL, "admin@example.com", "admin-password-123")
 	admin.must(200, "POST", "/api/locales", map[string]string{"code": "en", "name": "English"})
 	p := admin.must(201, "POST", "/api/projects", map[string]string{"slug": "demo", "name": "Demo", "source_locale": "en"})
@@ -371,11 +488,11 @@ func TestWebhook(t *testing.T) {
 	admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "web", "name": "Web", "format": "json", "repository_id": rid})
 	admin.must(400, "POST", ppath+"/components", map[string]any{"slug": "bad", "name": "Bad", "format": "json", "repository_id": rid + 100})
 	st := admin.must(200, "GET", "/api/repositories/"+itoa(rid), nil)
-	if st["checkout"].(map[string]any)["exists"] != false {
+	if st["last_import_commit"] != "" {
 		t.Fatalf("status: %v", st)
 	}
-	if code, _ := admin.do("GET", "/api/repositories/"+itoa(rid)+"/scan", nil, nil); code != 409 {
-		t.Fatalf("scan before clone should be 409: %d", code)
+	if code, _ := admin.do("GET", "/api/repositories/"+itoa(rid)+"/scan", nil, nil); code != 200 {
+		t.Fatalf("scan should work without clone: %d", code)
 	}
 
 	body := []byte(`{"ref":"refs/heads/main","repository":{"clone_url":"https://github.com/owner/repo.git"}}`)
@@ -423,3 +540,87 @@ func TestWebhook(t *testing.T) {
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+func TestRepositoryBusy(t *testing.T) {
+	s, ts := newTestServer(t)
+	admin := login(t, ts.URL, "admin@example.com", "admin-password-123")
+	admin.must(200, "POST", "/api/locales", map[string]string{"code": "en-US", "name": "English (US)"})
+	p := admin.must(201, "POST", "/api/projects", map[string]string{"slug": "busy", "name": "Busy", "source_locale": "en-US"})
+	ppath := "/api/projects/" + itoa(int64(p["id"].(float64)))
+	r := admin.must(201, "POST", ppath+"/repositories", map[string]string{"url": "https://github.com/owner/repo", "branch": "main"})
+	rid := int64(r["id"].(float64))
+	// Hold the repository lock the way a running operation would.
+	ctx := context.Background()
+	conn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err = conn.Exec(ctx, "SELECT pg_advisory_lock($1)", -rid); err != nil {
+		t.Fatal(err)
+	}
+	// A second operation is rejected instead of waiting on a pool connection.
+	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/sync", map[string]string{}, nil); code != 429 {
+		t.Fatalf("busy sync: %d %s", code, raw)
+	}
+	// Unrelated requests keep being served while the repository is locked.
+	if code, raw := admin.do("GET", ppath, nil, nil); code != 200 {
+		t.Fatalf("project read during lock: %d %s", code, raw)
+	}
+	if _, err = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", -rid); err != nil {
+		t.Fatal(err)
+	}
+	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/sync", map[string]string{}, nil); code == 429 {
+		t.Fatalf("sync after release must not report busy: %d %s", code, raw)
+	}
+}
+
+func TestGlossaryCSVFormula(t *testing.T) {
+	_, ts := newTestServer(t)
+	admin := login(t, ts.URL, "admin@example.com", "admin-password-123")
+	admin.must(200, "POST", "/api/locales", map[string]string{"code": "en-US", "name": "English (US)"})
+	admin.must(200, "POST", "/api/locales", map[string]string{"code": "ja", "name": "Japanese"})
+	p := admin.must(201, "POST", "/api/projects", map[string]string{"slug": "csv", "name": "CSV", "source_locale": "en-US"})
+	ppath := "/api/projects/" + itoa(int64(p["id"].(float64)))
+	admin.must(204, "PUT", ppath+"/locales/ja", nil)
+	admin.must(200, "POST", ppath+"/glossary", map[string]string{"locale": "ja", "term": "=SUM(A1)", "translation": "+1", "note": "@ref"})
+	admin.must(200, "POST", ppath+"/glossary", map[string]string{"locale": "ja", "term": "-ing", "translation": "接尾辞", "note": "quote \" and , comma"})
+	_, raw := admin.do("GET", ppath+"/glossary/export?locale=ja", nil, nil)
+	for _, want := range []string{"'=SUM(A1),ja,'+1,'@ref\n", "'-ing,ja,接尾辞,\"quote \"\" and , comma\"\n"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("export must not emit formula cells, want %q:\n%s", want, raw)
+		}
+	}
+	// The escape is symmetric, so re-importing the export restores the values.
+	res := admin.must(200, "POST", ppath+"/glossary/import", raw)
+	if res["imported"] != float64(2) {
+		t.Fatalf("re-import: %v", res)
+	}
+	_, raw = admin.do("GET", ppath+"/glossary?locale=ja", nil, nil)
+	for _, want := range []string{`"term":"=SUM(A1)"`, `"translation":"+1"`, `"note":"@ref"`, `"term":"-ing"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("round trip changed values, want %s:\n%s", want, raw)
+		}
+	}
+}
+
+func TestRouterErrors(t *testing.T) {
+	_, ts := newTestServer(t)
+	c := &client{t: t, base: ts.URL}
+	// Router errors keep their status instead of becoming 500 (e.g. a mistyped webhook URL).
+	for _, tc := range []struct {
+		method, path string
+		code         int
+		message      string
+	}{
+		{"POST", "/webhook/github", 404, "not found"},
+		{"GET", "/webhooks/github", 405, "method not allowed"},
+	} {
+		code, raw := c.do(tc.method, tc.path, nil, nil)
+		var out map[string]string
+		_ = json.Unmarshal(raw, &out)
+		if code != tc.code || out["error"] != tc.message {
+			t.Fatalf("%s %s: want %d %q got %d %s", tc.method, tc.path, tc.code, tc.message, code, raw)
+		}
+	}
+}

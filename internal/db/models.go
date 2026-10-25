@@ -35,6 +35,14 @@ type GlossaryTerm struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ImportIssue struct {
+	ComponentID int64              `json:"component_id"`
+	Locale      string             `json:"locale"`
+	Key         string             `json:"key"`
+	Value       string             `json:"value"`
+	SeenAt      pgtype.Timestamptz `json:"seen_at"`
+}
+
 type Locale struct {
 	Code string `json:"code"`
 	Name string `json:"name"`
@@ -66,6 +74,34 @@ type Repository struct {
 	Url       string             `json:"url"`
 	Branch    string             `json:"branch"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type RepositoryImport struct {
+	ComponentID  int64              `json:"component_id"`
+	Locale       string             `json:"locale"`
+	RepositoryID int64              `json:"repository_id"`
+	Path         string             `json:"path"`
+	BlobSha      string             `json:"blob_sha"`
+	SourceSha    string             `json:"source_sha"`
+	CommitSha    string             `json:"commit_sha"`
+	FilePattern  string             `json:"file_pattern"`
+	Format       string             `json:"format"`
+	SyncedAt     pgtype.Timestamptz `json:"synced_at"`
+}
+
+type RepositoryPublication struct {
+	ID           int64              `json:"id"`
+	RepositoryID int64              `json:"repository_id"`
+	Fingerprint  string             `json:"fingerprint"`
+	Branch       string             `json:"branch"`
+	BaseSha      string             `json:"base_sha"`
+	TreeSha      string             `json:"tree_sha"`
+	Title        string             `json:"title"`
+	Body         string             `json:"body"`
+	Changes      []byte             `json:"changes"`
+	CommitSha    string             `json:"commit_sha"`
+	Url          string             `json:"url"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
 type Session struct {

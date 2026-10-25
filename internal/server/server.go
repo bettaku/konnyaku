@@ -31,10 +31,15 @@ type Server struct {
 	Config     config.Config
 	Echo       *echo.Echo
 	loginSlots chan struct{}
+	repoSlots  chan struct{}
+	GitHubHTTP *http.Client
 }
 
 func New(pool *pgxpool.Pool, cfg config.Config) *Server {
-	s := &Server{Pool: pool, Q: db.New(pool), Config: cfg, loginSlots: make(chan struct{}, 4)}
+	// A repository operation can hold three pool connections at once (queue
+	// claim, repository lock and catalog import), so admit far fewer than the
+	// pool holds and let the rest fail fast instead of waiting on a connection.
+	s := &Server{Pool: pool, Q: db.New(pool), Config: cfg, loginSlots: make(chan struct{}, 4), repoSlots: make(chan struct{}, 3)}
 	e := echo.NewWithConfig(echo.Config{IPExtractor: echo.ExtractIPDirect()})
 	s.Echo = e
 	e.Use(middleware.Recover(), middleware.BodyLimit(5<<20))
@@ -59,10 +64,15 @@ func New(pool *pgxpool.Pool, cfg config.Config) *Server {
 	e.HTTPErrorHandler = func(c *echo.Context, err error) {
 		code, message := 500, "internal server error"
 		var he *echo.HTTPError
+		var sc echo.HTTPStatusCoder
 		var pe *pgconn.PgError
 		if errors.As(err, &he) {
 			code = he.Code
 			message = he.Message
+		} else if errors.As(err, &sc) {
+			// Router errors such as echo.ErrNotFound are not *echo.HTTPError.
+			code = sc.StatusCode()
+			message = strings.ToLower(http.StatusText(code))
 		} else if errors.Is(err, pgx.ErrNoRows) {
 			code = 404
 			message = "not found"
@@ -117,6 +127,7 @@ func New(pool *pgxpool.Pool, cfg config.Config) *Server {
 	api.DELETE("/projects/:project", s.deleteProject)
 	api.GET("/projects/:project/stats", s.projectStats)
 	api.GET("/projects/:project/history", s.projectHistory)
+	api.GET("/projects/:project/issues", s.projectImportIssues)
 	api.GET("/projects/:project/locales", s.projectLocales)
 	api.PUT("/projects/:project/locales/:locale", s.addProjectLocale)
 	api.DELETE("/projects/:project/locales/:locale", s.removeProjectLocale)
@@ -130,13 +141,20 @@ func New(pool *pgxpool.Pool, cfg config.Config) *Server {
 	api.GET("/repositories/:repository", s.repositoryStatus)
 	api.DELETE("/repositories/:repository", s.deleteRepository, s.admin)
 	api.GET("/repositories/:repository/scan", s.scanRepository)
-	api.POST("/repositories/:repository/git/:action", s.repositoryAction)
+	api.POST("/repositories/:repository/git/:action", func(c *echo.Context) error {
+		return echo.NewHTTPError(410, "local Git operations were removed; use sync, preview and pull-request")
+	})
+	api.POST("/repositories/:repository/sync", s.repositorySync)
+	api.POST("/repositories/:repository/preview", s.repositoryPreview, s.admin)
+	api.GET("/repositories/:repository/publications/:publication", s.repositoryPublication, s.admin)
 	api.POST("/repositories/:repository/pull-request", s.repositoryPullRequest, s.admin)
 	api.GET("/components/:component", s.getComponent)
 	api.PATCH("/components/:component", s.updateComponent)
 	api.DELETE("/components/:component", s.deleteComponent)
 	api.GET("/components/:component/stats", s.componentStats)
 	api.GET("/components/:component/history", s.componentHistory)
+	api.GET("/components/:component/issues", s.listImportIssues)
+	api.POST("/components/:component/issues/dismiss", s.dismissImportIssue)
 	api.GET("/components/:component/units", s.listUnits)
 	api.POST("/components/:component/import", s.importFile)
 	api.GET("/components/:component/export", s.exportFile)
