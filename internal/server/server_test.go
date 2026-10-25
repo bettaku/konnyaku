@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -73,8 +72,9 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	if err = migrations.Apply(ctx, pool); err != nil {
 		t.Fatalf("migration must be idempotent: %v", err)
 	}
-	cfg := config.Config{Address: "127.0.0.1:0", DatabaseURL: dsn, PublicURL: "http://konnyaku.test", RepositoryRoot: t.TempDir(), WebhookSecret: secret}
+	cfg := config.Config{Address: "127.0.0.1:0", DatabaseURL: dsn, PublicURL: "http://konnyaku.test", WebhookSecret: secret}
 	s := New(pool, cfg)
+	mockGitHub(s, map[string]string{})
 	ts := httptest.NewServer(s.Echo)
 	t.Cleanup(ts.Close)
 	if _, err = CreateUser(ctx, db.New(pool), "admin@example.com", "admin-password-123", "Admin", true); err != nil {
@@ -390,7 +390,6 @@ func TestRepositorySync(t *testing.T) {
 	ppath := "/api/projects/" + itoa(int64(p["id"].(float64)))
 	r := admin.must(201, "POST", ppath+"/repositories", map[string]string{"url": "https://github.com/owner/repo", "branch": "main"})
 	rid := int64(r["id"].(float64))
-	dir := filepath.Join(s.Config.RepositoryRoot, itoa(rid))
 	files := map[string]string{
 		"locales/en.json":               `{"hello":"Hello","bye":"Bye"}`,
 		"locales/ja.json":               `{"hello":"こんにちは","bye":"","stale":"gone"}`,
@@ -401,22 +400,15 @@ func TestRepositorySync(t *testing.T) {
 		"res/values/strings.xml":        `<resources><string name="a">A</string></resources>`,
 		"res/values-zh-rCN/strings.xml": `<resources><string name="a">甲</string></resources>`,
 	}
-	for path, content := range files {
-		full := filepath.Join(dir, filepath.FromSlash(path))
-		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
+	remote := mockGitHub(s, files)
+
 	_, raw := admin.do("GET", "/api/repositories/"+itoa(rid)+"/scan", nil, nil)
 	if !strings.Contains(string(raw), `"locales":["en","fr","ja","pt-BR"]`) || !strings.Contains(string(raw), `"locales":["zh-CN"]`) {
 		t.Fatalf("scan: %s", raw)
 	}
 	web := admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "web", "name": "Web", "format": "json", "repository_id": rid, "file_pattern": "locales/{locale}.json"})
 	android := admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "app", "name": "App", "format": "android", "repository_id": rid, "file_pattern": "res/values-{locale}/strings.xml"})
-	res := admin.must(200, "POST", "/api/repositories/"+itoa(rid)+"/git/sync", map[string]string{})
+	res := admin.must(200, "POST", "/api/repositories/"+itoa(rid)+"/sync", map[string]string{})
 	sync, _ := json.Marshal(res["sync"])
 	for _, want := range []string{
 		`{"component":"web","empty":0,"imported":2,"locale":"en-US","path":"locales/en.json","unknown":0}`,
@@ -450,23 +442,39 @@ func TestRepositorySync(t *testing.T) {
 	}
 	// Export keeps existing spellings and creates new files following them.
 	admin.must(204, "PUT", ppath+"/locales/es-MX", nil)
-	paths, err := s.exportRepository(context.Background(), db.Repository{ID: rid, ProjectID: int64(p["id"].(float64))}, s.checkout(db.Repository{ID: rid, Url: "https://github.com/owner/repo.git", Branch: "main"}))
+	delete(remote.Files, "locales/fr.json") // Invalid files must not become publication baselines.
+	remote.refresh()
+	repo := db.Repository{ID: rid, ProjectID: int64(p["id"].(float64)), Url: "https://github.com/owner/repo.git", Branch: "main"}
+	g := s.github(repo)
+	snapshot, err := g.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes, err := s.exportRepository(context.Background(), repo, g, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, c := range changes {
+		paths = append(paths, c.Path)
+	}
 	joined := strings.Join(paths, " ")
-	for _, want := range []string{"locales/ja.json", "locales/pt_BR.json", "locales/es_MX.json", "res/values-zh-rCN/strings.xml", "res/values-es-rMX/strings.xml"} {
+	for _, want := range []string{"locales/ja.json", "locales/pt_BR.json", "locales/es_MX.json", "res/values-es-rMX/strings.xml"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("export paths: %s", joined)
 		}
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, "locales/ja.json")); !strings.Contains(string(b), "こんにちは") || !strings.Contains(string(b), `"bye": ""`) {
-		t.Fatalf("exported ja.json: %s", b)
+	for _, c := range changes {
+		if c.Path == "locales/ja.json" && (!strings.Contains(c.Content, "こんにちは") || !strings.Contains(c.Content, `"bye": ""`)) {
+			t.Fatalf("exported ja.json: %s", c.Content)
+		}
 	}
+
 }
 
 func TestWebhook(t *testing.T) {
-	_, ts := newTestServer(t)
+	s, ts := newTestServer(t)
+	mockGitHub(s, map[string]string{})
 	admin := login(t, ts.URL, "admin@example.com", "admin-password-123")
 	admin.must(200, "POST", "/api/locales", map[string]string{"code": "en", "name": "English"})
 	p := admin.must(201, "POST", "/api/projects", map[string]string{"slug": "demo", "name": "Demo", "source_locale": "en"})
@@ -480,11 +488,11 @@ func TestWebhook(t *testing.T) {
 	admin.must(201, "POST", ppath+"/components", map[string]any{"slug": "web", "name": "Web", "format": "json", "repository_id": rid})
 	admin.must(400, "POST", ppath+"/components", map[string]any{"slug": "bad", "name": "Bad", "format": "json", "repository_id": rid + 100})
 	st := admin.must(200, "GET", "/api/repositories/"+itoa(rid), nil)
-	if st["checkout"].(map[string]any)["exists"] != false {
+	if st["last_import_commit"] != "" {
 		t.Fatalf("status: %v", st)
 	}
-	if code, _ := admin.do("GET", "/api/repositories/"+itoa(rid)+"/scan", nil, nil); code != 409 {
-		t.Fatalf("scan before clone should be 409: %d", code)
+	if code, _ := admin.do("GET", "/api/repositories/"+itoa(rid)+"/scan", nil, nil); code != 200 {
+		t.Fatalf("scan should work without clone: %d", code)
 	}
 
 	body := []byte(`{"ref":"refs/heads/main","repository":{"clone_url":"https://github.com/owner/repo.git"}}`)
@@ -552,7 +560,7 @@ func TestRepositoryBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A second operation is rejected instead of waiting on a pool connection.
-	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/git/sync", map[string]string{}, nil); code != 429 {
+	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/sync", map[string]string{}, nil); code != 429 {
 		t.Fatalf("busy sync: %d %s", code, raw)
 	}
 	// Unrelated requests keep being served while the repository is locked.
@@ -562,7 +570,7 @@ func TestRepositoryBusy(t *testing.T) {
 	if _, err = conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", -rid); err != nil {
 		t.Fatal(err)
 	}
-	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/git/sync", map[string]string{}, nil); code == 429 {
+	if code, raw := admin.do("POST", "/api/repositories/"+itoa(rid)+"/sync", map[string]string{}, nil); code == 429 {
 		t.Fatalf("sync after release must not report busy: %d %s", code, raw)
 	}
 }
@@ -592,6 +600,27 @@ func TestGlossaryCSVFormula(t *testing.T) {
 	for _, want := range []string{`"term":"=SUM(A1)"`, `"translation":"+1"`, `"note":"@ref"`, `"term":"-ing"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("round trip changed values, want %s:\n%s", want, raw)
+		}
+	}
+}
+
+func TestRouterErrors(t *testing.T) {
+	_, ts := newTestServer(t)
+	c := &client{t: t, base: ts.URL}
+	// Router errors keep their status instead of becoming 500 (e.g. a mistyped webhook URL).
+	for _, tc := range []struct {
+		method, path string
+		code         int
+		message      string
+	}{
+		{"POST", "/webhook/github", 404, "not found"},
+		{"GET", "/webhooks/github", 405, "method not allowed"},
+	} {
+		code, raw := c.do(tc.method, tc.path, nil, nil)
+		var out map[string]string
+		_ = json.Unmarshal(raw, &out)
+		if code != tc.code || out["error"] != tc.message {
+			t.Fatalf("%s %s: want %d %q got %d %s", tc.method, tc.path, tc.code, tc.message, code, raw)
 		}
 	}
 }

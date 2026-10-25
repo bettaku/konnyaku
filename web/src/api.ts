@@ -21,10 +21,11 @@ export type Component = {
 };
 export type Format = "json" | "yaml" | "po" | "android";
 export type Repository = { id: number; project_id: number; name: string; url: string; branch: string; created_at: string };
-export type Checkout = { exists: boolean; branch: string; commit: string; subject: string; dirty: boolean; modified: number };
-export type RepositoryStatus = { repository: Repository; checkout: Checkout; components: Component[]; github_token: boolean };
+export type PublicationChange = { path: string; mode: string; before: string; content: string };
+export type Publication = { id: number; branch: string; base: string; title: string; body: string; commit: string; url: string; created_at: string; changes?: PublicationChange[] };
+export type RepositoryStatus = { repository: Repository; last_import_commit: string; synced_at: string | null; publication: Publication | null; components: Component[]; github_token: boolean };
 export type Candidate = { pattern: string; format: Format; locales: string[] };
-export type SyncFile = { component: string; locale: string; path: string; imported: number; unknown: number; empty: number };
+export type SyncFile = { component: string; locale: string; path: string; imported: number; unknown: number; empty: number; unchanged?: boolean };
 export type SyncResult = { files: SyncFile[]; ignored: string[]; errors: string[] };
 export type Member = { user_id: number; email: string; name: string; role: Role };
 export type Status = "untranslated" | "translated" | "reviewed" | "needs_review";
@@ -145,10 +146,10 @@ export const api = {
   repository: (id: number) => request<RepositoryStatus>("GET", `/repositories/${id}`),
   deleteRepository: (id: number) => request<void>("DELETE", `/repositories/${id}`),
   scanRepository: (id: number) => request<Candidate[]>("GET", `/repositories/${id}/scan`),
-  repositoryAction: (id: number, action: "clone" | "pull" | "push" | "sync" | "commit", message = "") =>
-    request<{ status: string; sync?: SyncResult; committed?: boolean }>("POST", `/repositories/${id}/git/${action}`, { message }),
-  pullRequest: (id: number, title: string, body: string) =>
-    request<{ url: string; branch: string }>("POST", `/repositories/${id}/pull-request`, { title, body }),
+  syncRepository: (id: number) => request<{ sync: SyncResult }>("POST", `/repositories/${id}/sync`, {}),
+  previewRepository: (id: number, title: string, body: string) => request<Publication>("POST", `/repositories/${id}/preview`, { title, body }),
+  publication: (id: number, job: number) => request<Publication>("GET", `/repositories/${id}/publications/${job}`),
+  pullRequest: (id: number, publication_id: number) => request<Publication>("POST", `/repositories/${id}/pull-request`, { publication_id }),
   deliveries: () => request<Delivery[]>("GET", "/deliveries"),
   retryDelivery: (id: string) => request<void>("POST", `/deliveries/${enc(id)}/retry`),
 };

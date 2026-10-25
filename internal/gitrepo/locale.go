@@ -1,8 +1,6 @@
 package gitrepo
 
 import (
-	"errors"
-	"os"
 	"strings"
 
 	"golang.org/x/text/language"
@@ -45,64 +43,30 @@ type LocaleFile struct {
 // Recognized reports whether the file maps to a locale (or is the default file).
 func (f LocaleFile) Recognized() bool { return f.Default || f.Code != "" }
 
-// LocaleFiles lists the files in the checkout that match pattern, e.g.
-// "locales/{locale}.json", "i18n/{locale}/messages.json" or
-// "res/values-{locale}/strings.xml" (which also reports res/values/strings.xml
-// as the default file).
-func (r Repository) LocaleFiles(pattern string) ([]LocaleFile, error) {
+// LocaleFiles matches regular files in a pinned GitHub tree, including Android defaults.
+func (s Snapshot) LocaleFiles(pattern string) ([]LocaleFile, error) {
 	if err := ValidatePattern(pattern); err != nil {
 		return nil, err
 	}
 	i := strings.Index(pattern, "{locale}")
 	prefix, suffix := pattern[:i], pattern[i+len("{locale}"):]
-	dir, segPrefix := pathSplit(prefix)
-	segSuffix, rest := suffix, ""
-	if j := strings.IndexByte(suffix, '/'); j >= 0 {
-		segSuffix, rest = suffix[:j], suffix[j:]
-	}
-	base := r.Dir()
-	if dir != "" {
-		var err error
-		if base, err = r.SafePath(dir); err != nil {
-			return nil, err
-		}
-	}
-	entries, err := os.ReadDir(base)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	var out []LocaleFile
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasPrefix(name, segPrefix) || !strings.HasSuffix(name, segSuffix) || len(name) < len(segPrefix)+len(segSuffix) {
-			// Default file: the qualifier and its separator are absent (values/ vs values-{locale}/).
-			if (strings.HasSuffix(segPrefix, "-") || strings.HasSuffix(segPrefix, "_")) && name == strings.TrimRight(segPrefix, "-_")+segSuffix {
-				if p := joinPattern(dir, name) + rest; r.isFile(p) {
-					out = append(out, LocaleFile{Path: p, Default: true})
-				}
-			}
+	for _, p := range s.Paths() {
+		if (strings.HasSuffix(prefix, "-") || strings.HasSuffix(prefix, "_")) && p == strings.TrimRight(prefix, "-_")+suffix {
+			out = append(out, LocaleFile{Path: p, Default: true})
 			continue
 		}
-		raw := name[len(segPrefix) : len(name)-len(segSuffix)]
-		// Unrecognized names (index, ja-KS, kab-KAB) are returned with an empty
-		// code so callers can report that they were ignored.
-		code, _, _ := ParseLocaleName(raw)
-		if p := joinPattern(dir, name) + rest; r.isFile(p) {
-			out = append(out, LocaleFile{Path: p, Raw: raw, Code: code})
+		if !strings.HasPrefix(p, prefix) || !strings.HasSuffix(p, suffix) || len(p) < len(prefix)+len(suffix) {
+			continue
 		}
+		raw := p[len(prefix) : len(p)-len(suffix)]
+		if strings.Contains(raw, "/") {
+			continue
+		}
+		code, _, _ := ParseLocaleName(raw)
+		out = append(out, LocaleFile{Path: p, Raw: raw, Code: code})
 	}
 	return out, nil
-}
-func (r Repository) isFile(rel string) bool {
-	p, err := r.SafePath(rel)
-	if err != nil {
-		return false
-	}
-	info, err := os.Stat(p)
-	return err == nil && info.Mode().IsRegular()
 }
 
 // FindLocaleFile picks the file for a locale: an exact canonical match first,

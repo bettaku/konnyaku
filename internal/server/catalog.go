@@ -570,6 +570,10 @@ type ImportResult struct {
 // unknown to the source catalog and empty values are skipped and counted, so a
 // slightly divergent translation file still imports everything it can.
 func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw []byte, uid int64) (ImportResult, error) {
+	return s.importCatalog(ctx, co, locale, raw, uid, nil)
+}
+
+func (s *Server) importCatalog(ctx context.Context, co db.Component, locale string, raw []byte, uid int64, origin *importOrigin) (ImportResult, error) {
 	var res ImportResult
 	cat, err := formats.Parse(co.Format, raw)
 	if err != nil {
@@ -642,7 +646,13 @@ func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw
 				res.Empty++
 				continue
 			}
-			if e := q.ImportTranslation(ctx, db.ImportTranslationParams{UnitID: old.ID, Locale: locale, Value: entry.Value, UpdatedBy: pgtype.Int8{Int64: uid, Valid: uid > 0}}); e != nil {
+			var e error
+			if origin != nil && origin.Preserve {
+				_, e = tx.Exec(ctx, "INSERT INTO translations(unit_id,locale,value,updated_by) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", old.ID, locale, entry.Value, pgtype.Int8{Int64: uid, Valid: uid > 0})
+			} else {
+				e = q.ImportTranslation(ctx, db.ImportTranslationParams{UnitID: old.ID, Locale: locale, Value: entry.Value, UpdatedBy: pgtype.Int8{Int64: uid, Valid: uid > 0}})
+			}
+			if e != nil {
 				return res, e
 			}
 			res.Imported++
@@ -656,6 +666,15 @@ func (s *Server) Import(ctx context.Context, co db.Component, locale string, raw
 	}
 	if err = q.SaveDocument(ctx, db.SaveDocumentParams{ComponentID: co.ID, Locale: locale, Content: raw}); err != nil {
 		return res, err
+	}
+	if origin != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO repository_imports(component_id,locale,repository_id,path,blob_sha,source_sha,commit_sha,file_pattern,format)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(component_id,locale) DO UPDATE SET
+   repository_id=excluded.repository_id,path=excluded.path,blob_sha=excluded.blob_sha,source_sha=excluded.source_sha,
+   commit_sha=excluded.commit_sha,file_pattern=excluded.file_pattern,format=excluded.format,synced_at=now()`,
+			co.ID, locale, co.RepositoryID, origin.Path, origin.Blob, origin.Source, origin.Commit, co.FilePattern, co.Format); err != nil {
+			return res, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return res, err

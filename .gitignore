@@ -41,3 +41,4 @@ web/dist/
 .pnpm-store/
 .devcontainer/secrets.env
 *-security-review.md
+policy.yaml

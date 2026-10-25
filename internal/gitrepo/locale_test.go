@@ -1,8 +1,6 @@
 package gitrepo
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -22,15 +20,9 @@ func TestParseLocaleName(t *testing.T) {
 }
 
 func TestLocaleFilesAndFind(t *testing.T) {
-	r := Repository{Root: t.TempDir(), ID: 1}
+	r := Snapshot{Files: map[string]Entry{}}
 	for _, p := range []string{"locales/en.json", "locales/ja.json", "locales/pt_BR.json", "locales/index.json", "i18n/de/app.json", "i18n/fr-CA/app.json", "i18n/fr-CA/other.json", "res/values/strings.xml", "res/values-ja/strings.xml", "res/values-zh-rCN/strings.xml", "res/values-night/strings.xml"} {
-		full := filepath.Join(r.Dir(), filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		r.Files[p] = Entry{Path: p, Type: "blob", Mode: "100644"}
 	}
 	files, err := r.LocaleFiles("locales/{locale}.json")
 	if err != nil || len(files) != 4 {

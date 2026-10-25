@@ -16,12 +16,12 @@ COPY --from=web /src/web/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w" -o /out/konnyaku ./cmd/konnyaku
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && rm -rf /var/lib/apt/lists/* \
-    && useradd --uid 10001 --create-home konnyaku && mkdir /data && chown konnyaku:konnyaku /data
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --create-home konnyaku
 COPY --from=build /out/konnyaku /usr/local/bin/konnyaku
 USER 10001:10001
-WORKDIR /data
-ENV LISTEN_ADDR=0.0.0.0:8080 REPOSITORY_ROOT=/data/repositories
+WORKDIR /home/konnyaku
+ENV LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 ENTRYPOINT ["konnyaku"]
 CMD ["serve"]
