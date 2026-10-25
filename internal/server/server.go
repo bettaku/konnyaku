@@ -32,6 +32,7 @@ type Server struct {
 	Echo       *echo.Echo
 	loginSlots chan struct{}
 	repoSlots  chan struct{}
+	GitHubHTTP *http.Client
 }
 
 func New(pool *pgxpool.Pool, cfg config.Config) *Server {
@@ -135,7 +136,12 @@ func New(pool *pgxpool.Pool, cfg config.Config) *Server {
 	api.GET("/repositories/:repository", s.repositoryStatus)
 	api.DELETE("/repositories/:repository", s.deleteRepository, s.admin)
 	api.GET("/repositories/:repository/scan", s.scanRepository)
-	api.POST("/repositories/:repository/git/:action", s.repositoryAction)
+	api.POST("/repositories/:repository/git/:action", func(c *echo.Context) error {
+		return echo.NewHTTPError(410, "local Git operations were removed; use sync, preview and pull-request")
+	})
+	api.POST("/repositories/:repository/sync", s.repositorySync)
+	api.POST("/repositories/:repository/preview", s.repositoryPreview, s.admin)
+	api.GET("/repositories/:repository/publications/:publication", s.repositoryPublication, s.admin)
 	api.POST("/repositories/:repository/pull-request", s.repositoryPullRequest, s.admin)
 	api.GET("/components/:component", s.getComponent)
 	api.PATCH("/components/:component", s.updateComponent)

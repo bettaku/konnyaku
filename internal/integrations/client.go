@@ -138,26 +138,3 @@ func ValidSignature(secret, signature string, raw []byte) bool {
 	mac.Write(raw)
 	return hmac.Equal(got, mac.Sum(nil))
 }
-
-type PullRequest struct{ Title, Head, Base, Body string }
-
-func CreatePR(ctx context.Context, client *http.Client, token, repo string, in PullRequest) (string, error) {
-	if token == "" {
-		return "", errors.New("GITHUB_TOKEN not configured")
-	}
-	if client == nil {
-		client = Client()
-	}
-	var out struct {
-		URL string `json:"html_url"`
-	}
-	body := map[string]any{"title": in.Title, "head": in.Head, "base": in.Base, "body": in.Body, "draft": true}
-	if err := post(ctx, client, "https://api.github.com/repos/"+repo+"/pulls", token, body, &out); err != nil {
-		return "", err
-	}
-	u, err := url.Parse(out.URL)
-	if err != nil || u.Scheme != "https" || u.Host != "github.com" {
-		return "", errors.New("invalid pull request URL")
-	}
-	return out.URL, nil
-}

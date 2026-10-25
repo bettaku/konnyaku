@@ -23,10 +23,10 @@ Translation management server (in the spirit of Weblate / Crowdin) written in Go
 | Translation memory (pg_trgm similarity across the projects a user can access) with one-click bulk fill of exact matches | ✅ |
 | Project glossary per locale, highlighted in source strings with a consistency check, CSV import/export | ✅ |
 | Machine translation: OpenAI-compatible chat API, Google Cloud Translation v3 | ✅ |
-| Repositories (project-level GitHub HTTPS remotes): clone / pull / sync / commit / push | ✅ |
-| Translation file auto-detection in a checkout (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`); sync imports every locale file found, registering locales automatically, and tolerates `ja` vs `ja-JP`, `en_US` and Android `zh-rCN` spellings | ✅ |
+| Repositories: GitHub REST API sync / preview / resumable draft PR publication (no local checkout) | ✅ |
+| Translation file auto-detection in a pinned GitHub tree (`dir/{locale}.ext`, `dir/{locale}/file.ext`, `values-{locale}/strings.xml`); sync imports every locale file found, registering locales automatically, and tolerates `ja` vs `ja-JP`, `en_US` and Android `zh-rCN` spellings | ✅ |
 | GitHub push webhook → queued re-import of every attached component | ✅ |
-| "Publish translations": export on a fresh branch, push, open a draft pull request | ✅ |
+| "Publish translations": review a frozen export, create one commit on a dedicated branch, open a draft pull request | ✅ |
 
 ## Quick start (development)
 
@@ -39,7 +39,7 @@ ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='change-me-please' ADMIN_NAME=Admin
 go run ./cmd/konnyaku serve              # http://localhost:8080
 ```
 
-Then in the UI: create a project (source locale) → connect a GitHub repository → **Clone** → **Detect translation files** → create components from the suggestions → **Sync from checkout** → translate → **Open draft pull request**. Components without a repository work with manual import/export instead.
+Then in the UI: create a project (source locale) → connect a GitHub repository → **Detect translation files** → create components from the suggestions → **Sync from GitHub** → translate → **Preview changes** → **Open draft pull request**. Components without a repository work with manual import/export instead.
 
 For frontend development run `cd web && pnpm dev` (Vite on :5173, proxies `/api` to the Go server on :8080).
 
@@ -63,7 +63,7 @@ docker exec konnyaku_devcontainer-app-1 bash .devcontainer/post-create.sh
 
 ## Configuration
 
-See [.env.example](.env.example). `DATABASE_URL` is required; everything else is optional and the related feature returns a clear error when unset.
+See [.env.example](.env.example). GitHub integration uses the REST API; Git and a repository volume are no longer needed. Before upgrading a checkout-based deployment, follow the [migration steps](deploy/README.md#checkout方式からの移行). `DATABASE_URL` is required; everything else is optional and the related feature returns a clear error when unset.
 
 ## HTTP API
 
@@ -79,8 +79,10 @@ All `/api/*` endpoints use a `session` cookie. Non-GET requests must send `X-Req
 | `GET /api/projects/:id/locales`, `PUT/DELETE /api/projects/:id/locales/:code` | manager for writes |
 | `GET/POST /api/projects/:id/repositories`, `GET/DELETE /api/repositories/:id` | admin creates/deletes |
 | `GET /api/repositories/:id/scan` | manager |
-| `POST /api/repositories/:id/git/:action` (`clone\|pull\|push\|sync\|commit`) | manager for `sync`, admin otherwise |
-| `POST /api/repositories/:id/pull-request` `{title,body}` | admin |
+| `POST /api/repositories/:id/sync` | manager |
+| `POST /api/repositories/:id/preview` `{title,body}` | admin |
+| `GET /api/repositories/:id/publications/:job` | admin |
+| `POST /api/repositories/:id/pull-request` `{publication_id}` | admin |
 | `GET/PUT/DELETE /api/projects/:id/members/:user` | manager |
 | `GET/POST /api/projects/:id/components`, `GET/PATCH/DELETE /api/components/:id` | manager for writes |
 | `GET /api/components/:id/stats`, `GET /api/components/:id/history?locale=` | viewer |

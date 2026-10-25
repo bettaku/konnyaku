@@ -1,8 +1,6 @@
 package gitrepo
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -51,30 +49,8 @@ func TestValidatePattern(t *testing.T) {
 	}
 }
 
-func TestLocalRepositoryReadWrite(t *testing.T) {
-	root := t.TempDir()
-	r := Repository{Root: root, ID: 7, URL: "https://github.com/a/b.git", Branch: "main"}
-	if _, err := r.SafePath("x/y.json"); err == nil {
-		t.Fatal("expected error when checkout directory is missing")
-	}
-	if err := writeDir(r.Dir()); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Write("locales/en.json", []byte("{}")); err != nil {
-		t.Fatal(err)
-	}
-	got, err := r.Read("locales/en.json")
-	if err != nil || string(got) != "{}" {
-		t.Fatalf("read: %q %v", got, err)
-	}
-	if _, err = r.Read("../outside"); err == nil {
-		t.Fatal("expected traversal rejection")
-	}
-}
-
 func TestScan(t *testing.T) {
-	root := t.TempDir()
-	r := Repository{Root: root, ID: 3}
+	r := Snapshot{Files: map[string]Entry{}}
 	files := map[string]string{
 		"web/locales/en.json":                    "{}",
 		"web/locales/ja.json":                    "{}",
@@ -88,14 +64,9 @@ func TestScan(t *testing.T) {
 		"README.md":                              "",
 	}
 	for p, content := range files {
-		full := filepath.Join(r.Dir(), filepath.FromSlash(p))
-		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		r.Files[p] = Entry{Path: p, Type: "blob", Mode: "100644", SHA: BlobSHA([]byte(content))}
 	}
+
 	got, err := r.Scan()
 	if err != nil {
 		t.Fatal(err)

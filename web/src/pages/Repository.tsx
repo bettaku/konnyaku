@@ -1,7 +1,8 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import { useNavigate, useParams } from "@solidjs/router";
 import { A } from "@solidjs/router";
-import { api, type Candidate, type SyncResult } from "../api";
+import { api, type Candidate, type SyncResult, type Publication } from "../api";
+import { diffWords } from "../diff";
 import { useAction, useSession } from "../session";
 import { Crumbs, Empty, formData } from "../ui";
 
@@ -15,26 +16,22 @@ export function RepositoryPage() {
   const [project] = createResource(() => status()?.repository.project_id ?? null, api.project);
   const [candidates, setCandidates] = createSignal<Candidate[] | null>(null);
   const [busy, setBusy] = createSignal("");
+  const [preview, setPreview] = createSignal<Publication | null>(null);
   const [lastSync, setLastSync] = createSignal<SyncResult | null>(null);
   const manage = () => project()?.role === "manager" || project()?.role === "admin";
 
-  const action = async (name: "clone" | "pull" | "push" | "sync" | "commit", message = "") => {
-    setBusy(name);
+  const sync = async () => {
+    setBusy("sync");
     try {
-      const r = await api.repositoryAction(id(), name, message);
-      if (name === "sync" && r.sync) {
-        setLastSync(r.sync);
-        const total = r.sync.files.reduce((n, f) => n + f.imported, 0);
-        if (r.sync.errors.length) notify(`Imported ${total} entries from ${r.sync.files.length} file(s); ${r.sync.errors.length} file(s) failed — see the sync report`);
-        else notify(`Imported ${total} entries from ${r.sync.files.length} file(s)`, true);
-      } else if (name === "commit") notify(r.committed ? "Committed translation changes" : "No translation changes to commit", true);
-      else notify(`${name} done`, true);
+      const r = await api.syncRepository(id());
+      setLastSync(r.sync);
+      setPreview(null);
+      const total = r.sync.files.reduce((n, f) => n + f.imported, 0);
+      const unchanged = r.sync.files.filter((f) => f.unchanged).length;
+      notify(`Imported ${total} entries; ${unchanged} unchanged file(s); ${r.sync.errors.length} error(s)`, !r.sync.errors.length);
       refetch();
-    } catch (err) {
-      notify(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
+    } catch (err) { notify(err instanceof Error ? err.message : String(err)); }
+    finally { setBusy(""); }
   };
   const scan = async () => {
     setBusy("scan");
@@ -52,23 +49,38 @@ export function RepositoryPage() {
     if (!ok) return;
     setCandidates((cs) => cs?.filter((x) => x !== c) ?? null);
     // Import the files right away so progress reflects the existing translations.
-    await action("sync");
+    await sync();
   };
-  const pullRequest = async (e: SubmitEvent) => {
+  const previewChanges = async (e: SubmitEvent) => {
     const { data } = formData(e);
+    setBusy("preview");
+    setPreview(null);
+    try { setPreview(await api.previewRepository(id(), data.title, data.body)); refetch(); }
+    catch (err) { notify(err instanceof Error ? err.message : String(err)); }
+    finally { setBusy(""); }
+  };
+  const resume = async () => {
+    const job = status()?.publication;
+    if (!job) return;
+    setBusy("preview");
+    try { setPreview(await api.publication(id(), job.id)); }
+    catch (err) { notify(err instanceof Error ? err.message : String(err)); }
+    finally { setBusy(""); }
+  };
+  const pullRequest = async () => {
+    const job = preview();
+    if (!job) return;
     setBusy("pr");
     try {
-      const r = await api.pullRequest(id(), data.title, data.body);
+      const r = await api.pullRequest(id(), job.id);
+      setPreview(r);
       notify(`Pull request opened: ${r.url}`, true);
       refetch();
-    } catch (err) {
-      notify(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
+    } catch (err) { notify(err instanceof Error ? err.message : String(err)); refetch(); }
+    finally { setBusy(""); }
   };
   const remove = async () => {
-    if (!confirm("Disconnect this repository and delete its checkout? Components stay, but lose their repository link.")) return;
+    if (!confirm("Disconnect this repository? Components stay, but lose their repository link.")) return;
     if (await run(() => api.deleteRepository(id()))) navigate(`/projects/${status()!.repository.project_id}`);
   };
   const suggestSlug = (pattern: string) => pattern.replace(/\{locale\}/g, "").replace(/\.[a-z]+$/i, "").replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase().slice(0, 64) || "strings";
@@ -86,48 +98,54 @@ export function RepositoryPage() {
               <dl class="kv">
                 <dt>URL</dt><dd><a href={s().repository.url.replace(/\.git$/, "")} target="_blank" rel="noopener">{s().repository.url}</a></dd>
                 <dt>Tracked branch</dt><dd><code>{s().repository.branch}</code></dd>
-                <dt>Checkout</dt>
-                <dd>
-                  <Show when={s().checkout.exists} fallback={<span class="muted">not cloned yet</span>}>
-                    <code>{s().checkout.branch}</code> @ <code>{s().checkout.commit}</code> {s().checkout.subject}
-                    <Show when={s().checkout.dirty}><div class="error small">{s().checkout.modified} uncommitted change(s) in the checkout</div></Show>
-                  </Show>
-                </dd>
-                <dt>GitHub token</dt><dd>{s().github_token ? "configured" : <span class="error">not configured (push and pull requests unavailable)</span>}</dd>
+                <dt>Last imported commit</dt><dd><code>{s().last_import_commit || "Not synchronized yet"}</code></dd>
+                <dt>Last file import</dt><dd>{s().synced_at ? new Date(s().synced_at!).toLocaleString() : "—"}</dd>
+                <dt>GitHub token</dt><dd>{s().github_token ? "configured" : <span class="muted">not configured (public repositories can be read; publishing is unavailable)</span>}</dd>
               </dl>
             </section>
             <section class="panel">
               <h3>Actions</h3>
-              <Show when={manage()} fallback={<p class="muted">Managers can synchronize; administrators can push and open pull requests.</p>}>
+              <Show when={manage()} fallback={<p class="muted">Managers can synchronize; administrators can publish pull requests.</p>}>
                 <div class="row">
-                  <Show when={!s().checkout.exists} fallback={<button class="secondary" disabled={!!busy() || !user()?.admin} onClick={() => action("pull")}>Pull</button>}>
-                    <button disabled={!!busy() || !user()?.admin} onClick={() => action("clone")}>Clone</button>
-                  </Show>
-                  <button class="secondary" disabled={!!busy() || !s().checkout.exists} onClick={() => action("sync")} title="Import the source file and every locale file found for the attached components">Sync from checkout</button>
-                  <button class="secondary" disabled={!!busy() || !s().checkout.exists} onClick={scan}>Detect translation files</button>
+                  <button class="secondary" disabled={!!busy()} onClick={sync}>Sync from GitHub</button>
+                  <button class="secondary" disabled={!!busy()} onClick={scan}>Detect translation files</button>
                 </div>
-                <Show when={user()?.admin && s().checkout.exists}>
+                <Show when={user()?.admin}>
                   <h3 class="mt">Publish translations</h3>
-                  <form class="row" onSubmit={pullRequest}>
+                  <form class="row" onSubmit={previewChanges}>
                     <label class="grow">Pull request title<input name="title" placeholder="Update translations" /></label>
                     <label class="grow">Body<input name="body" placeholder="optional" /></label>
-                    <button type="submit" disabled={!!busy() || !s().github_token}>Open draft pull request</button>
+                    <button type="submit" disabled={!!busy()}>Preview changes</button>
                   </form>
-                  <p class="muted small">Exports every target locale on a new <code>konnyaku/translations-…</code> branch, pushes it and opens a draft PR against <code>{s().repository.branch}</code>.</p>
-                  <details>
-                    <summary>Commit directly to {s().repository.branch}</summary>
-                    <form class="row" onSubmit={(e) => { const { data } = formData(e); action("commit", data.message); }}>
-                      <label class="grow">Commit message<input name="message" placeholder="Update translations" /></label>
-                      <button type="submit" class="secondary" disabled={!!busy()}>Export & commit</button>
-                      <button type="button" class="secondary" disabled={!!busy()} onClick={() => action("push")}>Push</button>
-                    </form>
-                  </details>
-                  <div class="mt"><button class="danger small" onClick={remove}>Disconnect repository</button></div>
+                  <p class="muted small">Review the exported translations, then open a draft pull request against <code>{s().repository.branch}</code>.</p>
+                  <Show when={s().publication}>
+                    {(p) => <Show when={p().url} fallback={<button class="secondary" disabled={!!busy()} onClick={resume}>Review / resume previous publication</button>}>
+                      <a href={p().url} target="_blank" rel="noopener">View latest pull request</a>
+                    </Show>}
+                  </Show>
+                  <div class="mt"><button class="danger small" disabled={!!busy()} onClick={remove}>Disconnect repository</button></div>
                 </Show>
               </Show>
               <Show when={busy()}><p class="muted small">Running {busy()}…</p></Show>
             </section>
           </div>
+
+          <Show when={preview()}>
+            {(p) => <section class="panel">
+              <h2>{p().title}</h2>
+              <p>{p().body}</p>
+              <Show when={p().url} fallback={<>
+                <p class="muted small">This preview is saved. Later translation edits are excluded; generate a new preview to include them.</p>
+                <For each={p().changes ?? []}>{(change) => <details>
+                  <summary><code>{change.path}</code></summary>
+                  <pre class="publication-diff"><For each={diffWords(change.before, change.content)}>{(part) =>
+                    part.type === "add" ? <ins>{part.text}</ins> : part.type === "del" ? <del>{part.text}</del> : <span>{part.text}</span>
+                  }</For></pre>
+                </details>}</For>
+                <button class="mt" disabled={!!busy() || !s().github_token} onClick={pullRequest}>Open draft pull request</button>
+              </>}><a href={p().url} target="_blank" rel="noopener">View pull request</a></Show>
+            </section>}
+          </Show>
 
           <Show when={lastSync()}>
             {(r) => (
@@ -150,7 +168,7 @@ export function RepositoryPage() {
                               <td>{f.component}</td>
                               <td><span class="badge">{f.locale}</span></td>
                               <td><code>{f.path}</code></td>
-                              <td>{f.imported}</td>
+                              <td>{f.unchanged ? "Unchanged" : f.imported}</td>
                               <td class={f.unknown ? "term-missing" : "muted"} title="keys present in this file but not in the source catalog; skipped">{f.unknown}</td>
                               <td class="muted">{f.empty}</td>
                             </tr>

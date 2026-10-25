@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -27,28 +26,32 @@ func (s *Server) repository(c *echo.Context, min string) (db.Repository, error) 
 	}
 	return r, s.authorize(c, r.ProjectID, min)
 }
-func (s *Server) checkout(r db.Repository) gitrepo.Repository {
-	return gitrepo.Repository{Root: s.Config.RepositoryRoot, ID: r.ID, URL: r.Url, Branch: r.Branch, Token: s.Config.GitHubToken}
+func (s *Server) github(r db.Repository) gitrepo.Repository {
+	return gitrepo.Repository{URL: r.Url, Branch: r.Branch, Token: s.Config.GitHubToken, HTTP: s.GitHubHTTP}
 }
 
 // errRepositoryBusy reports that another operation holds the repository. It is
 // an HTTPError so handlers can return it unchanged.
 var errRepositoryBusy = echo.NewHTTPError(429, "another repository operation is running, try again")
 
-// gitError reports Git and checkout failures as conflicts while leaving
+// gitError reports GitHub API failures as conflicts while leaving
 // errRepositoryBusy and other HTTP errors with their own status.
 func gitError(err error) error {
 	var he *echo.HTTPError
-	if err == nil || errors.As(err, &he) {
+	if err == nil || errors.As(err, &he) || errors.Is(err, pgx.ErrNoRows) {
 		return err
+	}
+	var api *gitrepo.APIError
+	if errors.As(err, &api) && (api.Status == 429 || api.RetryAfter > 0) {
+		return echo.NewHTTPError(429, api.Error())
 	}
 	return echo.NewHTTPError(409, err.Error())
 }
 
-// withRepository serializes Git work per repository across processes. Work is
+// withRepository serializes GitHub work per repository across processes. Work is
 // admitted before a pool connection is taken and the lock is never waited on,
 // so queued operations cannot hold the connections the running one still needs.
-func (s *Server) withRepository(ctx context.Context, r db.Repository, fn func(gitrepo.Repository) error) error {
+func (s *Server) withRepository(ctx context.Context, r db.Repository, fn func(context.Context, gitrepo.Repository) error) error {
 	if _, err := gitrepo.GitHubRepository(r.Url); err != nil {
 		return err
 	}
@@ -73,7 +76,7 @@ func (s *Server) withRepository(ctx context.Context, r db.Repository, fn func(gi
 	if !locked {
 		return errRepositoryBusy
 	}
-	return fn(s.checkout(r))
+	return fn(ctx, s.github(r))
 }
 func (s *Server) listRepositories(c *echo.Context) error {
 	pid, err := s.projectID(c, "viewer")
@@ -122,11 +125,11 @@ func (s *Server) deleteRepository(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	err = s.withRepository(c.Request().Context(), r, func(g gitrepo.Repository) error {
+	err = s.withRepository(c.Request().Context(), r, func(ctx context.Context, g gitrepo.Repository) error {
 		if _, e := s.Q.DeleteRepository(c.Request().Context(), r.ID); e != nil {
 			return e
 		}
-		return os.RemoveAll(g.Dir())
+		return nil
 	})
 	if err != nil {
 		return err
@@ -138,15 +141,30 @@ func (s *Server) repositoryStatus(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	st, err := s.checkout(r).Status(c.Request().Context())
-	if err != nil {
-		return echo.NewHTTPError(409, err.Error())
+	var commit string
+	var syncedAt *time.Time
+	err = s.Pool.QueryRow(c.Request().Context(), "SELECT commit_sha,synced_at FROM repository_imports WHERE repository_id=$1 ORDER BY synced_at DESC LIMIT 1", r.ID).Scan(&commit, &syncedAt)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
 	}
+	var publication *publication
+	var jobID int64
+	err = s.Pool.QueryRow(c.Request().Context(), "SELECT id FROM repository_publications WHERE repository_id=$1 ORDER BY id DESC LIMIT 1", r.ID).Scan(&jobID)
+	if err == nil && user(c).Admin {
+		publication, err = s.loadPublication(c.Request().Context(), r.ID, jobID)
+		if publication != nil {
+			publication.Changes = nil
+		}
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+
 	components, err := s.Q.RepositoryComponents(c.Request().Context(), pgInt8(r.ID))
 	if err != nil {
 		return err
 	}
-	return c.JSON(200, map[string]any{"repository": r, "checkout": st, "components": components, "github_token": s.Config.GitHubToken != ""})
+	return c.JSON(200, map[string]any{"repository": r, "last_import_commit": commit, "synced_at": syncedAt, "publication": publication, "components": components, "github_token": s.Config.GitHubToken != ""})
 }
 func (s *Server) scanRepository(c *echo.Context) error {
 	r, err := s.repository(c, "manager")
@@ -154,12 +172,12 @@ func (s *Server) scanRepository(c *echo.Context) error {
 		return err
 	}
 	var candidates []gitrepo.Candidate
-	err = s.withRepository(c.Request().Context(), r, func(g gitrepo.Repository) error {
-		if _, e := os.Lstat(g.Dir()); errors.Is(e, os.ErrNotExist) {
-			return errors.New("clone the repository first")
+	err = s.withRepository(c.Request().Context(), r, func(ctx context.Context, g gitrepo.Repository) error {
+		snapshot, e := g.Snapshot(ctx)
+		if e != nil {
+			return e
 		}
-		var e error
-		candidates, e = g.Scan()
+		candidates, e = snapshot.Scan()
 		return e
 	})
 	if err != nil {
@@ -181,19 +199,20 @@ type SyncFile struct {
 	Component string `json:"component"`
 	Locale    string `json:"locale"`
 	Path      string `json:"path"`
+	Unchanged bool   `json:"unchanged,omitempty"`
 	ImportResult
 }
 
 func (r *SyncResult) failed() bool { return len(r.Errors) > 0 }
 
-// syncRepository imports every locale file the checkout holds for each attached
-// component: the source catalog first (falling back to a language-only or
-// default file), then all other locale files. Locales found in the repository
-// are registered automatically so a freshly cloned project starts with its
-// existing translations instead of at 0%. Problems are collected per file and
-// never stop the remaining files from being imported.
+// syncRepository imports a single immutable GitHub snapshot, source files first.
 func (s *Server) syncRepository(ctx context.Context, r db.Repository, g gitrepo.Repository, uid int64) (*SyncResult, error) {
 	res := &SyncResult{Files: []SyncFile{}, Ignored: []string{}, Errors: []string{}}
+	snapshot, err := g.Snapshot(ctx)
+	if err != nil {
+		return res, err
+	}
+
 	p, err := s.Q.GetProject(ctx, r.ProjectID)
 	if err != nil {
 		return res, err
@@ -206,28 +225,50 @@ func (s *Server) syncRepository(ctx context.Context, r db.Repository, g gitrepo.
 		res.Errors = append(res.Errors, "no components use this repository yet")
 	}
 	for _, co := range components {
-		files, err := g.LocaleFiles(co.FilePattern)
+		files, err := snapshot.LocaleFiles(co.FilePattern)
 		if err != nil {
 			res.Errors = append(res.Errors, co.Slug+": "+err.Error())
 			continue
 		}
-		importFile := func(f *gitrepo.LocaleFile, locale string) bool {
-			raw, err := g.Read(f.Path)
-			var ir ImportResult
-			if err == nil {
-				ir, err = s.Import(ctx, co, locale, raw, uid)
-			}
-			if err != nil {
-				res.Errors = append(res.Errors, f.Path+": "+errorMessage(err))
-				return false
-			}
-			res.Files = append(res.Files, SyncFile{Component: co.Slug, Locale: locale, Path: f.Path, ImportResult: ir})
-			return true
-		}
+
 		src := gitrepo.FindLocaleFile(files, p.SourceLocale)
 		if src == nil {
 			res.Errors = append(res.Errors, co.Slug+": no source file for "+p.SourceLocale+" matching "+co.FilePattern)
 			continue
+		}
+		sourceSHA := snapshot.Files[src.Path].SHA
+		importFile := func(f *gitrepo.LocaleFile, locale string) bool {
+			entry := snapshot.Files[f.Path]
+			old, e := s.importBaseline(ctx, co, locale)
+			if e != nil {
+				res.Errors = append(res.Errors, f.Path+": "+errorMessage(e))
+				return false
+			}
+			same := old != nil && old.Path == f.Path && old.Blob == entry.SHA
+			if same && old.Source == sourceSHA {
+				res.Files = append(res.Files, SyncFile{Component: co.Slug, Locale: locale, Path: f.Path, Unchanged: true})
+				return true
+			}
+			var raw []byte
+			if same {
+				doc, e := s.Q.GetDocument(ctx, db.GetDocumentParams{ComponentID: co.ID, Locale: locale})
+				if e == nil && gitrepo.BlobSHA(doc.Content) == entry.SHA {
+					raw = doc.Content
+				}
+			}
+			if raw == nil {
+				raw, e = g.Read(ctx, entry)
+			}
+			var ir ImportResult
+			if e == nil {
+				ir, e = s.importCatalog(ctx, co, locale, raw, uid, &importOrigin{Path: f.Path, Blob: entry.SHA, Source: sourceSHA, Commit: snapshot.Commit, Preserve: same})
+			}
+			if e != nil {
+				res.Errors = append(res.Errors, f.Path+": "+errorMessage(e))
+				return false
+			}
+			res.Files = append(res.Files, SyncFile{Component: co.Slug, Locale: locale, Path: f.Path, ImportResult: ir})
+			return true
 		}
 		if !importFile(src, p.SourceLocale) {
 			continue
@@ -260,157 +301,21 @@ func errorMessage(err error) string {
 	return err.Error()
 }
 
-// exportRepository writes every target locale of every attached component into
-// the checkout, reusing the spelling of existing files, and returns the paths.
-func (s *Server) exportRepository(ctx context.Context, r db.Repository, g gitrepo.Repository) ([]string, error) {
-	targets, err := s.Q.ProjectLocales(ctx, r.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	components, err := s.Q.RepositoryComponents(ctx, pgInt8(r.ID))
-	if err != nil {
-		return nil, err
-	}
-	var paths []string
-	for _, co := range components {
-		files, err := g.LocaleFiles(co.FilePattern)
-		if err != nil {
-			return nil, errors.New(co.Slug + ": " + err.Error())
-		}
-		for _, t := range targets {
-			raw, err := s.Export(ctx, co, t.Code)
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue
-			}
-			if err != nil {
-				return nil, errors.New(co.Slug + " (" + t.Code + "): " + err.Error())
-			}
-			path := gitrepo.LocalePath(co.FilePattern, t.Code, files)
-			if f := gitrepo.FindLocaleFile(files, t.Code); f != nil && !f.Default {
-				path = f.Path
-			}
-			if err = g.Write(path, raw); err != nil {
-				return nil, err
-			}
-			paths = append(paths, path)
-		}
-	}
-	return paths, nil
-}
-func (s *Server) repositoryAction(c *echo.Context) error {
+func (s *Server) repositorySync(c *echo.Context) error {
 	r, err := s.repository(c, "manager")
 	if err != nil {
 		return err
 	}
-	if !user(c).Admin && c.Param("action") != "sync" {
-		return echo.NewHTTPError(403, "administrator required for remote Git operations")
-	}
-	ctx := c.Request().Context()
-	var in struct{ Message string }
-	if err = decode(c, &in); err != nil {
-		return err
-	}
-	result := map[string]any{}
-	err = s.withRepository(ctx, r, func(g gitrepo.Repository) error {
-		switch c.Param("action") {
-		case "clone":
-			return g.Clone(ctx)
-		case "pull":
-			return g.Pull(ctx)
-		case "push":
-			return g.Push(ctx)
-		case "sync":
-			sync, e := s.syncRepository(ctx, r, g, user(c).ID)
-			result["sync"] = sync
-			return e
-		case "commit":
-			if e := g.Clean(ctx); e != nil {
-				return e
-			}
-			if e := g.Checkout(ctx, r.Branch, false); e != nil {
-				return e
-			}
-			paths, e := s.exportRepository(ctx, r, g)
-			if e != nil {
-				return e
-			}
-			if in.Message == "" {
-				in.Message = "Update translations"
-			}
-			e = g.CommitPaths(ctx, paths, in.Message)
-			if errors.Is(e, gitrepo.ErrNothingToCommit) {
-				result["committed"] = false
-				return nil
-			}
-			result["committed"] = true
-			return e
-		default:
-			return echo.NewHTTPError(400, "unknown repository action")
-		}
-	})
-	if err != nil {
-		return gitError(err)
-	}
-	result["status"] = "done"
-	return c.JSON(200, result)
-}
-
-// repositoryPullRequest exports translations on a fresh branch, pushes it and
-// opens a draft pull request against the tracked branch.
-func (s *Server) repositoryPullRequest(c *echo.Context) error {
-	r, err := s.repository(c, "manager")
-	if err != nil {
-		return err
-	}
-	if !user(c).Admin {
-		return echo.NewHTTPError(403, "administrator required")
-	}
-	repo, err := gitrepo.GitHubRepository(r.Url)
-	if err != nil {
-		return echo.NewHTTPError(400, err.Error())
-	}
-	var in struct{ Title, Body string }
-	if err = decode(c, &in); err != nil {
-		return err
-	}
-	if in.Title == "" {
-		in.Title = "Update translations"
-	}
-	if !validName(in.Title) || len(in.Body) > 10000 {
-		return echo.NewHTTPError(400, "invalid title or body")
-	}
-	ctx := c.Request().Context()
-	branch := "konnyaku/translations-" + time.Now().UTC().Format("20060102-150405")
-	url := ""
-	err = s.withRepository(ctx, r, func(g gitrepo.Repository) error {
-		if e := g.Pull(ctx); e != nil {
-			return e
-		}
-		if e := g.Checkout(ctx, branch, true); e != nil {
-			return e
-		}
-		// Always return to the tracked branch so later syncs read the right files.
-		defer func() { _ = g.Checkout(context.Background(), r.Branch, false) }()
-		paths, e := s.exportRepository(ctx, r, g)
-		if e != nil {
-			return e
-		}
-		if e = g.CommitPaths(ctx, paths, in.Title); e != nil {
-			return e
-		}
-		if e = g.PushBranch(ctx, branch); e != nil {
-			return e
-		}
-		url, e = integrations.CreatePR(ctx, nil, s.Config.GitHubToken, repo, integrations.PullRequest{Title: in.Title, Head: branch, Base: r.Branch, Body: in.Body})
+	var result *SyncResult
+	err = s.withRepository(c.Request().Context(), r, func(ctx context.Context, g gitrepo.Repository) error {
+		var e error
+		result, e = s.syncRepository(ctx, r, g, user(c).ID)
 		return e
 	})
-	if errors.Is(err, gitrepo.ErrNothingToCommit) {
-		return echo.NewHTTPError(409, "no translation changes to propose")
-	}
 	if err != nil {
 		return gitError(err)
 	}
-	return c.JSON(201, map[string]string{"url": url, "branch": branch})
+	return c.JSON(200, map[string]any{"sync": result})
 }
 
 // ---- GitHub webhook ------------------------------------------------------------
@@ -452,7 +357,7 @@ func (s *Server) webhook(c *echo.Context) error {
 	if _, err = gitrepo.GitHubRepository(event.Repository.CloneURL); err != nil {
 		return echo.NewHTTPError(400, "invalid repository")
 	}
-	// Only queue explicitly configured repositories; URLs from events never create checkouts on their own.
+	// Only queue explicitly configured repositories; unregistered repositories are never fetched.
 	repos, err := s.Q.RepositoriesByURL(c.Request().Context(), event.Repository.CloneURL)
 	if err != nil {
 		return err
@@ -506,6 +411,23 @@ func (s *Server) processDelivery(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	rows, err := tx.Query(ctx, "SELECT delivery_id FROM webhook_deliveries WHERE repository_url=$1 AND ref=$2 AND status='pending'", event.RepositoryUrl, event.Ref)
+	if err != nil {
+		return err
+	}
+	var coalesced []string
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		coalesced = append(coalesced, id)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
 	repos, err := s.Q.RepositoriesByURL(ctx, event.RepositoryUrl)
 	if err != nil {
 		return err
@@ -515,14 +437,7 @@ func (s *Server) processDelivery(ctx context.Context) error {
 		if "refs/heads/"+r.Branch != event.Ref {
 			continue
 		}
-		err = s.withRepository(ctx, r, func(g gitrepo.Repository) error {
-			if _, e := os.Lstat(g.Dir()); errors.Is(e, os.ErrNotExist) {
-				if e = g.Clone(ctx); e != nil {
-					return e
-				}
-			} else if e = g.Pull(ctx); e != nil {
-				return e
-			}
+		err = s.withRepository(ctx, r, func(ctx context.Context, g gitrepo.Repository) error {
 			sync, e := s.syncRepository(ctx, r, g, 0)
 			if e == nil && sync.failed() {
 				e = errors.New(strings.Join(sync.Errors, "; "))
@@ -546,6 +461,11 @@ func (s *Server) processDelivery(ctx context.Context) error {
 	}
 	if err = q.FinishDelivery(ctx, db.FinishDeliveryParams{DeliveryID: event.DeliveryID, Status: status, Error: message}); err != nil {
 		return err
+	}
+	if status == "done" && len(coalesced) > 0 {
+		if _, err = tx.Exec(ctx, "UPDATE webhook_deliveries SET status='done',error='' WHERE delivery_id=ANY($1::text[]) AND status='pending'", coalesced); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
