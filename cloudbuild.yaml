@@ -1,0 +1,152 @@
+# Cloud Build: test → build image → push to Artifact Registry → migrate → deploy to Cloud Run
+#
+# Run manually:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_PUBLIC_URL=https://translate.example.com,_CLOUDSQL_INSTANCE=PROJECT:REGION:INSTANCE
+#
+# Prerequisites (once per project):
+#   - Artifact Registry Docker repository ${_AR_REPO} in ${_REGION}
+#   - Secret Manager secrets: konnyaku-database-url, konnyaku-github-token,
+#     konnyaku-github-webhook-secret, konnyaku-openai-api-key
+#     (DATABASE_URL for Cloud SQL over the unix socket, e.g.
+#      postgres://USER:PASS@/konnyaku?host=/cloudsql/PROJECT:REGION:INSTANCE)
+#   - Runtime service account ${_RUNTIME_SA} with roles/cloudsql.client,
+#     roles/secretmanager.secretAccessor (and roles/cloudtranslate.user for Google MT)
+#   - Build service account with roles/run.admin, roles/iam.serviceAccountUser on
+#     ${_RUNTIME_SA}, roles/artifactregistry.writer
+#
+# The tests run against a throwaway PostgreSQL 18 container on the cloudbuild network;
+# no production data is touched before the migrate step.
+
+substitutions:
+  _REGION: asia-northeast1
+  _AR_REPO: konnyaku
+  _SERVICE: konnyaku
+  _RUNTIME_SA: konnyaku-run@${PROJECT_ID}.iam.gserviceaccount.com
+  _PUBLIC_URL: https://translate.example.com
+  _CLOUDSQL_INSTANCE: ""          # PROJECT:REGION:INSTANCE; empty = no Cloud SQL connector
+  _GO_VERSION: 1.27.1
+  _NODE_VERSION: "24"
+  _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/konnyaku
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true
+  env:
+    - DOCKER_BUILDKIT=1
+
+timeout: 1800s
+
+steps:
+  # ---- Test -------------------------------------------------------------
+  - id: postgres
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        docker run -d --name pg --network cloudbuild \
+          -e POSTGRES_USER=konnyaku -e POSTGRES_PASSWORD=test-only -e POSTGRES_DB=konnyaku \
+          postgres:18
+        for i in $$(seq 1 30); do
+          docker exec pg pg_isready -U konnyaku -d konnyaku && exit 0
+          sleep 2
+        done
+        docker logs pg; exit 1
+
+  - id: web
+    name: node:${_NODE_VERSION}-bookworm-slim
+    dir: web
+    entrypoint: bash
+    args: [-c, corepack enable && pnpm install --frozen-lockfile && pnpm build]
+    waitFor: ["-"]
+
+  - id: go-test
+    name: golang:${_GO_VERSION}-bookworm
+    entrypoint: bash
+    env:
+      - TEST_DATABASE_URL=postgres://konnyaku:test-only@pg:5432/konnyaku?sslmode=disable
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        go test -race ./...
+        go vet ./...
+        go build ./cmd/konnyaku
+    waitFor: [postgres, web]
+
+  # ---- Build & push -----------------------------------------------------
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        docker pull ${_IMAGE}:latest || true
+        docker build \
+          --cache-from ${_IMAGE}:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t ${_IMAGE}:${BUILD_ID} \
+          -t ${_IMAGE}:latest \
+          .
+    waitFor: [go-test]
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: [push, --all-tags, "${_IMAGE}"]
+    waitFor: [build]
+
+  # ---- Migrate (Cloud Run Job, same network/secrets as the service) -------
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        sql=()
+        [ -n "${_CLOUDSQL_INSTANCE}" ] && sql=(--set-cloudsql-instances "${_CLOUDSQL_INSTANCE}")
+        gcloud run jobs deploy ${_SERVICE}-migrate \
+          --region ${_REGION} \
+          --image ${_IMAGE}:${BUILD_ID} \
+          --service-account ${_RUNTIME_SA} \
+          --args migrate \
+          --set-secrets DATABASE_URL=konnyaku-database-url:latest \
+          --max-retries 0 \
+          --task-timeout 600s \
+          "$${sql[@]}" \
+          --execute-now --wait
+    waitFor: [push]
+
+  # ---- Deploy -----------------------------------------------------------
+  # The process runs a background worker (webhook re-imports, publication), so CPU
+  # stays allocated and a single instance is kept warm. Multi-instance operation is
+  # not supported yet, hence max-instances=1.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        sql=()
+        [ -n "${_CLOUDSQL_INSTANCE}" ] && sql=(--add-cloudsql-instances "${_CLOUDSQL_INSTANCE}")
+        gcloud run deploy ${_SERVICE} \
+          --region ${_REGION} \
+          --image ${_IMAGE}:${BUILD_ID} \
+          --service-account ${_RUNTIME_SA} \
+          --port 8080 \
+          --no-cpu-throttling \
+          --min-instances 1 \
+          --max-instances 1 \
+          --timeout 300s \
+          --allow-unauthenticated \
+          --set-env-vars LISTEN_ADDR=0.0.0.0:8080,PUBLIC_URL=${_PUBLIC_URL},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global \
+          --set-secrets DATABASE_URL=konnyaku-database-url:latest,GITHUB_TOKEN=konnyaku-github-token:latest,GITHUB_WEBHOOK_SECRET=konnyaku-github-webhook-secret:latest,OPENAI_API_KEY=konnyaku-openai-api-key:latest \
+          "$${sql[@]}"
+    waitFor: [migrate]
+
+images:
+  - ${_IMAGE}:${BUILD_ID}
+  - ${_IMAGE}:latest
