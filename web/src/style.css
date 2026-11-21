@@ -160,3 +160,17 @@ input.filter { padding: .25rem .5rem; width: 12rem; }
 .progress-table .progress { min-width: 9rem; }
 .progress-table .progress .bar { flex: 1; min-width: 4rem; }
 .progress-table td:first-child { white-space: nowrap; }
+
+/* locale picker dialog */
+dialog.picker { width: min(34rem, calc(100vw - 2rem)); max-height: min(40rem, calc(100vh - 4rem)); padding: 0; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.18); color: var(--fg); }
+dialog.picker[open] { display: flex; flex-direction: column; }
+dialog.picker::backdrop { background: rgba(20, 24, 30, .35); }
+.picker-head { padding: .9rem 1rem .6rem; display: flex; flex-direction: column; gap: .55rem; border-bottom: 1px solid var(--line); }
+.picker-head .chips { max-height: 4.6rem; overflow-y: auto; }
+.picker-head .chip { padding: .1rem .55rem; font-size: .8rem; }
+.picker-list { overflow-y: auto; flex: 1; min-height: 8rem; padding: .3rem 0; }
+.picker-list li label { padding: .3rem 1rem; cursor: pointer; }
+.picker-list li label:hover { background: var(--accent-soft); }
+.picker-list li label.muted { cursor: default; color: var(--muted); }
+.picker-list li label.muted:hover { background: transparent; }
+.picker-foot { padding: .6rem 1rem; border-top: 1px solid var(--line); background: #fafbfc; }

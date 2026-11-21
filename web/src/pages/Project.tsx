@@ -2,7 +2,7 @@ import { For, Show, createMemo, createResource, createSignal } from "solid-js";
 import { A, useNavigate, useParams, useSearchParams } from "@solidjs/router";
 import { api, fmtTime, percent, type Format, type Stat } from "../api";
 import { useAction, useSession } from "../session";
-import { Badge, Crumbs, Empty, Legend, LocaleSelect, Progress, formData } from "../ui";
+import { Badge, Crumbs, Empty, Legend, LocalePicker, Progress, formData } from "../ui";
 
 type SortKey = "code" | "progress" | "needs";
 type LocaleRow = { code: string; name: string; total: Stat; byComponent: Map<number, Stat> };
@@ -14,7 +14,7 @@ export function ProjectPage() {
   const params = useParams();
   const id = () => Number(params.id);
   const [search, setSearch] = useSearchParams<{ tab?: string }>();
-  const { user, locales } = useSession();
+  const { user, locales, notify } = useSession();
   const run = useAction();
   const navigate = useNavigate();
   const [detail, { refetch: refetchDetail }] = createResource(id, api.project);
@@ -82,9 +82,17 @@ export function ProjectPage() {
     const { form, data } = formData(e);
     if (await run(() => api.createRepository(id(), { url: data.url, branch: data.branch, name: data.name }), "Repository added")) { form.reset(); refetchRepos(); }
   };
-  const addLocale = async (e: SubmitEvent) => {
-    const { form, data } = formData(e);
-    if (data.locale && (await run(() => api.addProjectLocale(id(), data.locale)))) { form.reset(); refetchDetail(); refetchStats(); }
+  const addLocales = async (codes: string[]) => {
+    const results = await Promise.allSettled(codes.map((c) => api.addProjectLocale(id(), c)));
+    const failed = codes.filter((_, i) => results[i].status === "rejected");
+    refetchDetail(); refetchStats();
+    if (failed.length) {
+      const reason = (results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason;
+      notify(`Could not add ${failed.join(", ")}: ${reason instanceof Error ? reason.message : String(reason)}`);
+      return false;
+    }
+    notify(`Added ${codes.length} locale${codes.length === 1 ? "" : "s"}`, true);
+    return true;
   };
   const removeLocale = async (code: string) => {
     if (!confirm(`Stop tracking ${code}? Existing translations are kept.`)) return;
@@ -194,10 +202,7 @@ export function ProjectPage() {
                   <tfoot>
                     <tr>
                       <td colspan={99}>
-                        <form class="row center" onSubmit={addLocale}>
-                          <LocaleSelect name="locale" locales={locales()} exclude={[d().project.source_locale, ...targetLocales().map((l) => l.code)]} allowEmpty="Add a target locale…" />
-                          <button type="submit" class="secondary small">Add</button>
-                        </form>
+                        <LocalePicker locales={locales()} added={targetLocales().map((l) => l.code)} exclude={[d().project.source_locale]} onAdd={addLocales} />
                       </td>
                     </tr>
                   </tfoot>
