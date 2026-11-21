@@ -1,8 +1,9 @@
 # Cloud Build: test → build image → push to Artifact Registry → migrate → deploy to Cloud Run
 #
 # Run manually:
-#   gcloud builds submit --config cloudbuild.yaml \
-#     --substitutions=_PUBLIC_URL=https://translate.example.com,_CLOUDSQL_INSTANCE=PROJECT:REGION:INSTANCE
+#   gcloud builds submit --config cloudbuild.yaml
+# (defaults target Cloud SQL instance konnyaku-db and the service's run.app URL;
+#  override _PUBLIC_URL / _CLOUDSQL_INSTANCE with --substitutions when needed)
 #
 # Prerequisites (once per project):
 #   - Artifact Registry Docker repository ${_AR_REPO} in ${_REGION}
@@ -23,8 +24,9 @@ substitutions:
   _AR_REPO: konnyaku
   _SERVICE: konnyaku
   _RUNTIME_SA: konnyaku-run@${PROJECT_ID}.iam.gserviceaccount.com
-  _PUBLIC_URL: https://translate.example.com
-  _CLOUDSQL_INSTANCE: ""          # PROJECT:REGION:INSTANCE; empty = no Cloud SQL connector
+  # Deterministic Cloud Run URL; override when serving from a custom domain.
+  _PUBLIC_URL: https://${_SERVICE}-${PROJECT_NUMBER}.${_REGION}.run.app
+  _CLOUDSQL_INSTANCE: ${PROJECT_ID}:${_REGION}:konnyaku-db   # empty = no Cloud SQL connector
   _GO_VERSION: 1.27.1
   _NODE_VERSION: "24"
   _IMAGE: ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/konnyaku
@@ -132,6 +134,14 @@ steps:
         set -euo pipefail
         sql=()
         [ -n "${_CLOUDSQL_INSTANCE}" ] && sql=(--add-cloudsql-instances "${_CLOUDSQL_INSTANCE}")
+        # DATABASE_URL is required; the integration secrets are attached only once they exist.
+        secrets=DATABASE_URL=konnyaku-database-url:latest
+        for pair in GITHUB_TOKEN=konnyaku-github-token GITHUB_WEBHOOK_SECRET=konnyaku-github-webhook-secret OPENAI_API_KEY=konnyaku-openai-api-key; do
+          name=$${pair#*=}
+          if gcloud secrets describe "$$name" --project ${PROJECT_ID} >/dev/null 2>&1; then
+            secrets="$$secrets,$${pair}:latest"
+          fi
+        done
         gcloud run deploy ${_SERVICE} \
           --region ${_REGION} \
           --image ${_IMAGE}:${BUILD_ID} \
@@ -143,7 +153,7 @@ steps:
           --timeout 300s \
           --allow-unauthenticated \
           --set-env-vars LISTEN_ADDR=0.0.0.0:8080,PUBLIC_URL=${_PUBLIC_URL},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global \
-          --set-secrets DATABASE_URL=konnyaku-database-url:latest,GITHUB_TOKEN=konnyaku-github-token:latest,GITHUB_WEBHOOK_SECRET=konnyaku-github-webhook-secret:latest,OPENAI_API_KEY=konnyaku-openai-api-key:latest \
+          --set-secrets "$$secrets" \
           "$${sql[@]}"
     waitFor: [migrate]
 
