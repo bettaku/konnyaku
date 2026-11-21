@@ -607,11 +607,33 @@ func (s *Server) importCatalog(ctx context.Context, co db.Component, locale stri
 			return res, err
 		}
 	}
-	for _, entry := range cat.Entries {
-		old, findErr := q.FindUnit(ctx, db.FindUnitParams{ComponentID: co.ID, Key: entry.Key})
-		if findErr != nil && !errors.Is(findErr, pgx.ErrNoRows) {
-			return res, findErr
+	// Load every unit once and pipeline the writes in a single batch: a
+	// round trip per key made large catalogs exceed the sync timeout.
+	type unitRef struct {
+		id     int64 // 0: inserted earlier in this import
+		source string
+	}
+	units := map[string]unitRef{}
+	rows, err := tx.Query(ctx, "SELECT id,key,source FROM units WHERE component_id=$1", co.ID)
+	if err != nil {
+		return res, err
+	}
+	for rows.Next() {
+		var id int64
+		var key, source string
+		if err = rows.Scan(&id, &key, &source); err != nil {
+			rows.Close()
+			return res, err
 		}
+		units[key] = unitRef{id, source}
+	}
+	if err = rows.Err(); err != nil {
+		return res, err
+	}
+	by := pgtype.Int8{Int64: uid, Valid: uid > 0}
+	batch := &pgx.Batch{}
+	for _, entry := range cat.Entries {
+		old, found := units[entry.Key]
 		if locale == p.SourceLocale {
 			source := entry.Value
 			if co.Format == "po" {
@@ -620,42 +642,43 @@ func (s *Server) importCatalog(ctx context.Context, co db.Component, locale stri
 					source = source[i+1:]
 				}
 			}
-			u, e := q.UpsertUnit(ctx, db.UpsertUnitParams{ComponentID: co.ID, Key: entry.Key, Source: source})
-			if e != nil {
-				return res, e
+			batch.Queue("INSERT INTO units (component_id,key,source) VALUES ($1,$2,$3) ON CONFLICT (component_id,key) DO UPDATE SET source=excluded.source", co.ID, entry.Key, source)
+			if found && old.id != 0 && old.source != source {
+				batch.Queue("UPDATE translations SET status='needs_review',version=version+1,updated_by=NULL,updated_at=now() WHERE unit_id=$1 AND status <> 'needs_review'", old.id)
 			}
-			if findErr == nil && old.Source != source {
-				if e = q.MarkNeedsReview(ctx, u.ID); e != nil {
-					return res, e
-				}
+			if !found {
+				units[entry.Key] = unitRef{0, source}
+			} else {
+				units[entry.Key] = unitRef{old.id, source}
 			}
 			res.Imported++
 		} else {
-			if errors.Is(findErr, pgx.ErrNoRows) {
+			if !found {
 				res.Unknown++
 				value := entry.Value
 				if len(value) > 1000 {
 					value = value[:1000]
 				}
-				if e := q.AddImportIssue(ctx, db.AddImportIssueParams{ComponentID: co.ID, Locale: locale, Key: entry.Key, Value: value}); e != nil {
-					return res, e
-				}
+				batch.Queue("INSERT INTO import_issues (component_id,locale,key,value) VALUES ($1,$2,$3,$4) ON CONFLICT (component_id,locale,key) DO UPDATE SET value=excluded.value, seen_at=now()", co.ID, locale, entry.Key, value)
 				continue
 			}
 			if entry.Value == "" {
 				res.Empty++
 				continue
 			}
-			var e error
 			if origin != nil && origin.Preserve {
-				_, e = tx.Exec(ctx, "INSERT INTO translations(unit_id,locale,value,updated_by) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", old.ID, locale, entry.Value, pgtype.Int8{Int64: uid, Valid: uid > 0})
+				batch.Queue("INSERT INTO translations(unit_id,locale,value,updated_by) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING", old.id, locale, entry.Value, by)
 			} else {
-				e = q.ImportTranslation(ctx, db.ImportTranslationParams{UnitID: old.ID, Locale: locale, Value: entry.Value, UpdatedBy: pgtype.Int8{Int64: uid, Valid: uid > 0}})
-			}
-			if e != nil {
-				return res, e
+				batch.Queue(`INSERT INTO translations (unit_id,locale,value,updated_by) VALUES ($1,$2,$3,$4)
+ON CONFLICT (unit_id,locale) DO UPDATE SET value=excluded.value,status='translated',version=translations.version+1,updated_by=excluded.updated_by,updated_at=now()
+WHERE translations.value IS DISTINCT FROM excluded.value`, old.id, locale, entry.Value, by)
 			}
 			res.Imported++
+		}
+	}
+	if batch.Len() > 0 {
+		if err = tx.SendBatch(ctx, batch).Close(); err != nil {
+			return res, err
 		}
 	}
 	if locale == p.SourceLocale {
