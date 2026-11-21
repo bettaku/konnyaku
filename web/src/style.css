@@ -143,3 +143,20 @@ details.issues > summary { color: var(--warn); }
 .publication-diff { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 28rem; overflow: auto; }
 .publication-diff ins { background: #d3f5df; color: #175e34; text-decoration: none; }
 .publication-diff del { background: #ffe0df; color: #8b2424; }
+
+/* project overview */
+.between { justify-content: space-between; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: .7rem; margin: .4rem 0 .6rem; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .6rem .9rem; display: flex; flex-direction: column; }
+.stat .num { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.th-sort { background: transparent; border: 0; padding: 0; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; }
+.th-sort:hover { color: var(--fg); }
+.progress-table .w-progress { width: 40%; }
+.progress-table tfoot td { border-top: 1px solid var(--line); background: #fafbfc; }
+.num-cell { font-variant-numeric: tabular-nums; }
+input.filter { padding: .25rem .5rem; width: 12rem; }
+.scroll { max-height: 32rem; overflow-y: auto; }
+.danger-zone { border-color: #f5c6c2; }
+.progress-table .progress { min-width: 9rem; }
+.progress-table .progress .bar { flex: 1; min-width: 4rem; }
+.progress-table td:first-child { white-space: nowrap; }

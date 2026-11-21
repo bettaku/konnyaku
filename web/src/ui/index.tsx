@@ -31,7 +31,7 @@ export const Badge = (props: { status: Status | string }) => <span class={"badge
 
 export function LocaleSelect(props: { locales: Locale[]; value?: string; name?: string; onChange?: (v: string) => void; exclude?: string[]; allowEmpty?: string }) {
   return (
-    <select name={props.name} value={props.value} onChange={(e) => props.onChange?.(e.currentTarget.value)}>
+    <select name={props.name} value={props.value ?? ""} onChange={(e) => props.onChange?.(e.currentTarget.value)}>
       <Show when={props.allowEmpty}><option value="">{props.allowEmpty}</option></Show>
       <For each={props.locales.filter((l) => !props.exclude?.includes(l.code))}>
         {(l) => <option value={l.code} selected={l.code === props.value}>{l.code} — {l.name}</option>}
