@@ -3,6 +3,18 @@ import { A } from "@solidjs/router";
 import { api } from "./api";
 import { SessionProvider, useAction, useSession } from "./session";
 import { LoginPage } from "./pages/Login";
+import { cycleTheme, theme } from "./theme";
+
+const themeIcon = { auto: "◐", light: "☀", dark: "☾" } as const;
+const themeLabel = { auto: "Theme: system", light: "Theme: light", dark: "Theme: dark" } as const;
+
+function ThemeToggle() {
+  return (
+    <button class="ghost theme-toggle" onClick={cycleTheme} title={`${themeLabel[theme()]} (click to change)`} aria-label={themeLabel[theme()]}>
+      <span aria-hidden="true">{themeIcon[theme()]}</span>
+    </button>
+  );
+}
 
 function Shell(props: ParentProps) {
   const { user, setUser, flash } = useSession();
@@ -35,6 +47,7 @@ function Shell(props: ParentProps) {
           <span class="who">{user()!.name}{user()!.admin ? " (admin)" : ""}</span>
           <button class="secondary small" onClick={logout}>Log out</button>
         </Show>
+        <ThemeToggle />
       </header>
       <main class="page">
         <Show when={booted()}>

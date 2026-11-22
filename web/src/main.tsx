@@ -1,4 +1,5 @@
 /* @refresh reload */
+import "./theme";
 import { render } from "solid-js/web";
 import { HashRouter, Route } from "@solidjs/router";
 import "./style.css";
