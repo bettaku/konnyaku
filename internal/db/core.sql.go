@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addImportIssue = `-- name: AddImportIssue :exec
+INSERT INTO import_issues (component_id,locale,key,value) VALUES ($1,$2,$3,$4)
+ON CONFLICT (component_id,locale,key) DO UPDATE SET value=excluded.value, seen_at=now()
+`
+
+type AddImportIssueParams struct {
+	ComponentID int64  `json:"component_id"`
+	Locale      string `json:"locale"`
+	Key         string `json:"key"`
+	Value       string `json:"value"`
+}
+
+func (q *Queries) AddImportIssue(ctx context.Context, arg AddImportIssueParams) error {
+	_, err := q.db.Exec(ctx, addImportIssue,
+		arg.ComponentID,
+		arg.Locale,
+		arg.Key,
+		arg.Value,
+	)
+	return err
+}
+
 const addProjectLocale = `-- name: AddProjectLocale :exec
 INSERT INTO project_locales (project_id,locale) VALUES ($1,$2) ON CONFLICT DO NOTHING
 `
@@ -341,6 +363,20 @@ func (q *Queries) DeleteGlossaryTerm(ctx context.Context, arg DeleteGlossaryTerm
 	return result.RowsAffected(), nil
 }
 
+const deleteImportIssues = `-- name: DeleteImportIssues :exec
+DELETE FROM import_issues WHERE component_id=$1 AND locale=$2
+`
+
+type DeleteImportIssuesParams struct {
+	ComponentID int64  `json:"component_id"`
+	Locale      string `json:"locale"`
+}
+
+func (q *Queries) DeleteImportIssues(ctx context.Context, arg DeleteImportIssuesParams) error {
+	_, err := q.db.Exec(ctx, deleteImportIssues, arg.ComponentID, arg.Locale)
+	return err
+}
+
 const deleteLocale = `-- name: DeleteLocale :execrows
 DELETE FROM locales WHERE code=$1
 `
@@ -365,6 +401,23 @@ type DeleteMemberParams struct {
 func (q *Queries) DeleteMember(ctx context.Context, arg DeleteMemberParams) error {
 	_, err := q.db.Exec(ctx, deleteMember, arg.ProjectID, arg.UserID)
 	return err
+}
+
+const deleteOtherSessions = `-- name: DeleteOtherSessions :execrows
+DELETE FROM sessions WHERE user_id=$1 AND token_hash <> $2
+`
+
+type DeleteOtherSessionsParams struct {
+	UserID    int64  `json:"user_id"`
+	TokenHash string `json:"token_hash"`
+}
+
+func (q *Queries) DeleteOtherSessions(ctx context.Context, arg DeleteOtherSessionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOtherSessions, arg.UserID, arg.TokenHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteProject = `-- name: DeleteProject :execrows
@@ -400,6 +453,24 @@ func (q *Queries) DeleteSession(ctx context.Context, tokenHash string) error {
 	return err
 }
 
+const dismissImportIssue = `-- name: DismissImportIssue :execrows
+DELETE FROM import_issues WHERE component_id=$1 AND locale=$2 AND ($3::text = '' OR key=$3)
+`
+
+type DismissImportIssueParams struct {
+	ComponentID int64  `json:"component_id"`
+	Locale      string `json:"locale"`
+	Key         string `json:"key"`
+}
+
+func (q *Queries) DismissImportIssue(ctx context.Context, arg DismissImportIssueParams) (int64, error) {
+	result, err := q.db.Exec(ctx, dismissImportIssue, arg.ComponentID, arg.Locale, arg.Key)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const enqueueDelivery = `-- name: EnqueueDelivery :execrows
 INSERT INTO webhook_deliveries (delivery_id,repository_url,ref) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING
 `
@@ -416,6 +487,20 @@ func (q *Queries) EnqueueDelivery(ctx context.Context, arg EnqueueDeliveryParams
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const ensureLocale = `-- name: EnsureLocale :exec
+INSERT INTO locales (code,name) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING
+`
+
+type EnsureLocaleParams struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+func (q *Queries) EnsureLocale(ctx context.Context, arg EnsureLocaleParams) error {
+	_, err := q.db.Exec(ctx, ensureLocale, arg.Code, arg.Name)
+	return err
 }
 
 const exactMemoryMatches = `-- name: ExactMemoryMatches :many
@@ -624,6 +709,24 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, email, password_hash, name, admin, created_at FROM users WHERE id = $1
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.Name,
+		&i.Admin,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const glossaryMatches = `-- name: GlossaryMatches :many
 SELECT id, project_id, locale, term, translation, note, updated_by, updated_at FROM glossary_terms WHERE project_id=$1 AND locale=$2 AND position(lower(term) IN lower($3)) > 0 ORDER BY length(term) DESC, term
 `
@@ -790,6 +893,36 @@ func (q *Queries) ListGlossary(ctx context.Context, arg ListGlossaryParams) ([]L
 			&i.UpdatedBy,
 			&i.UpdatedAt,
 			&i.UpdatedByName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listImportIssues = `-- name: ListImportIssues :many
+SELECT component_id, locale, key, value, seen_at FROM import_issues WHERE component_id=$1 ORDER BY locale, key
+`
+
+func (q *Queries) ListImportIssues(ctx context.Context, componentID int64) ([]ImportIssue, error) {
+	rows, err := q.db.Query(ctx, listImportIssues, componentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ImportIssue{}
+	for rows.Next() {
+		var i ImportIssue
+		if err := rows.Scan(
+			&i.ComponentID,
+			&i.Locale,
+			&i.Key,
+			&i.Value,
+			&i.SeenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1091,6 +1224,35 @@ func (q *Queries) ProjectHistory(ctx context.Context, projectID int64) ([]Projec
 	return items, nil
 }
 
+const projectImportIssueCounts = `-- name: ProjectImportIssueCounts :many
+SELECT i.component_id, count(*)::bigint AS issues FROM import_issues i JOIN components c ON c.id=i.component_id WHERE c.project_id=$1 GROUP BY i.component_id
+`
+
+type ProjectImportIssueCountsRow struct {
+	ComponentID int64 `json:"component_id"`
+	Issues      int64 `json:"issues"`
+}
+
+func (q *Queries) ProjectImportIssueCounts(ctx context.Context, projectID int64) ([]ProjectImportIssueCountsRow, error) {
+	rows, err := q.db.Query(ctx, projectImportIssueCounts, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProjectImportIssueCountsRow{}
+	for rows.Next() {
+		var i ProjectImportIssueCountsRow
+		if err := rows.Scan(&i.ComponentID, &i.Issues); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const projectLocales = `-- name: ProjectLocales :many
 SELECT pl.locale AS code, l.name FROM project_locales pl JOIN locales l ON l.code=pl.locale WHERE pl.project_id=$1 ORDER BY pl.locale
 `
@@ -1166,6 +1328,15 @@ func (q *Queries) ProjectStats(ctx context.Context, projectID int64) ([]ProjectS
 		return nil, err
 	}
 	return items, nil
+}
+
+const pruneImportIssues = `-- name: PruneImportIssues :exec
+DELETE FROM import_issues i WHERE i.component_id=$1 AND EXISTS (SELECT 1 FROM units u WHERE u.component_id=i.component_id AND u.key=i.key)
+`
+
+func (q *Queries) PruneImportIssues(ctx context.Context, componentID int64) error {
+	_, err := q.db.Exec(ctx, pruneImportIssues, componentID)
+	return err
 }
 
 const removeProjectLocale = `-- name: RemoveProjectLocale :exec
@@ -1596,6 +1767,48 @@ func (q *Queries) UpdateTranslation(ctx context.Context, arg UpdateTranslationPa
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const updateUserName = `-- name: UpdateUserName :one
+UPDATE users SET name=$2 WHERE id=$1 RETURNING id,email,name,admin
+`
+
+type UpdateUserNameParams struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+type UpdateUserNameRow struct {
+	ID    int64  `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+	Admin bool   `json:"admin"`
+}
+
+func (q *Queries) UpdateUserName(ctx context.Context, arg UpdateUserNameParams) (UpdateUserNameRow, error) {
+	row := q.db.QueryRow(ctx, updateUserName, arg.ID, arg.Name)
+	var i UpdateUserNameRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.Admin,
+	)
+	return i, err
+}
+
+const updateUserPassword = `-- name: UpdateUserPassword :exec
+UPDATE users SET password_hash=$2 WHERE id=$1
+`
+
+type UpdateUserPasswordParams struct {
+	ID           int64  `json:"id"`
+	PasswordHash string `json:"password_hash"`
+}
+
+func (q *Queries) UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error {
+	_, err := q.db.Exec(ctx, updateUserPassword, arg.ID, arg.PasswordHash)
+	return err
 }
 
 const upsertUnit = `-- name: UpsertUnit :one

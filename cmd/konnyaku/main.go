@@ -70,7 +70,7 @@ func run() error {
 		return errors.New("usage: konnyaku [serve|migrate|create-admin]")
 	}
 	var applied bool
-	if err = pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version='001_initial.sql')").Scan(&applied); err != nil || !applied {
+	if err = pool.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version='006_github_api.sql')").Scan(&applied); err != nil || !applied {
 		return errors.New("run konnyaku migrate before serving")
 	}
 	s := server.New(pool, cfg)

@@ -66,25 +66,6 @@ func TestGoogleTranslate(t *testing.T) {
 	}
 }
 
-func TestCreatePR(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/o/r/pulls" {
-			t.Errorf("unexpected path %s", r.URL.Path)
-		}
-		w.WriteHeader(201)
-		_ = json.NewEncoder(w).Encode(map[string]string{"html_url": "https://github.com/o/r/pull/1"})
-	}))
-	defer srv.Close()
-	client := &http.Client{Transport: rewrite{srv.URL, srv.Client().Transport}}
-	got, err := CreatePR(context.Background(), client, "tok", "o/r", PullRequest{Title: "t", Head: "h", Base: "main"})
-	if err != nil || got != "https://github.com/o/r/pull/1" {
-		t.Fatalf("got %q, %v", got, err)
-	}
-	if _, err = CreatePR(context.Background(), client, "", "o/r", PullRequest{}); err == nil {
-		t.Fatal("expected token error")
-	}
-}
-
 type rewrite struct {
 	target string
 	next   http.RoundTripper

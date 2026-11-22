@@ -8,10 +8,10 @@ import (
 )
 
 type Config struct {
-	Address, DatabaseURL, PublicURL, RepositoryRoot string
-	GitHubToken, WebhookSecret                      string
-	OpenAIBaseURL, OpenAIKey, OpenAIModel           string
-	GoogleProject, GoogleLocation                   string
+	Address, DatabaseURL, PublicURL       string
+	GitHubToken, WebhookSecret            string
+	OpenAIBaseURL, OpenAIKey, OpenAIModel string
+	GoogleProject, GoogleLocation         string
 }
 
 func env(key, fallback string) string {
@@ -21,7 +21,7 @@ func env(key, fallback string) string {
 	return fallback
 }
 func Load() (Config, error) {
-	c := Config{Address: env("LISTEN_ADDR", "127.0.0.1:8080"), DatabaseURL: os.Getenv("DATABASE_URL"), PublicURL: env("PUBLIC_URL", "http://localhost:8080"), RepositoryRoot: env("REPOSITORY_ROOT", "./data/repositories"), GitHubToken: os.Getenv("GITHUB_TOKEN"), WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"), OpenAIBaseURL: env("OPENAI_BASE_URL", "https://api.openai.com/v1"), OpenAIKey: os.Getenv("OPENAI_API_KEY"), OpenAIModel: os.Getenv("OPENAI_MODEL"), GoogleProject: os.Getenv("GOOGLE_CLOUD_PROJECT"), GoogleLocation: env("GOOGLE_CLOUD_LOCATION", "global")}
+	c := Config{Address: env("LISTEN_ADDR", "127.0.0.1:8080"), DatabaseURL: os.Getenv("DATABASE_URL"), PublicURL: env("PUBLIC_URL", "http://localhost:8080"), GitHubToken: os.Getenv("GITHUB_TOKEN"), WebhookSecret: os.Getenv("GITHUB_WEBHOOK_SECRET"), OpenAIBaseURL: env("OPENAI_BASE_URL", "https://api.openai.com/v1"), OpenAIKey: os.Getenv("OPENAI_API_KEY"), OpenAIModel: os.Getenv("OPENAI_MODEL"), GoogleProject: os.Getenv("GOOGLE_CLOUD_PROJECT"), GoogleLocation: env("GOOGLE_CLOUD_LOCATION", "global")}
 	if c.DatabaseURL == "" {
 		return c, errors.New("DATABASE_URL is required")
 	}
