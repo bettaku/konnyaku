@@ -12,6 +12,7 @@ import { RepositoryPage } from "./pages/Repository";
 import { LocalesPage } from "./pages/Locales";
 import { UsersPage } from "./pages/Users";
 import { DeliveriesPage } from "./pages/Deliveries";
+import { AccountPage } from "./pages/Account";
 
 render(
   () => (
@@ -25,6 +26,7 @@ render(
       <Route path="/locales" component={LocalesPage} />
       <Route path="/users" component={UsersPage} />
       <Route path="/deliveries" component={DeliveriesPage} />
+      <Route path="/account" component={AccountPage} />
       <Route path="*" component={ProjectsPage} />
     </HashRouter>
   ),

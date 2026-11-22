@@ -1,6 +1,7 @@
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { A } from "@solidjs/router";
 import { percent, type Locale, type Stat, type Status } from "../api";
+import { setTheme, theme, type ThemeChoice } from "../theme";
 
 export function Progress(props: { stat: Stat | undefined; compact?: boolean }) {
   const s = () => props.stat ?? { locale: "", total: 0, translated: 0, reviewed: 0, needs_review: 0 };
@@ -160,5 +161,33 @@ export function LocalePicker(props: { locales: Locale[]; added: string[]; exclud
         </div>
       </dialog>
     </>
+  );
+}
+
+/** Segmented control for the theme preference (system / light / dark). */
+export function ThemeSwitch(props: { compact?: boolean }) {
+  const options: Array<{ value: ThemeChoice; label: string; icon: string }> = [
+    { value: "auto", label: "System", icon: "◐" },
+    { value: "light", label: "Light", icon: "☀" },
+    { value: "dark", label: "Dark", icon: "☾" },
+  ];
+  return (
+    <div class={"segmented" + (props.compact ? " compact" : "")} role="radiogroup" aria-label="Theme">
+      <For each={options}>
+        {(o) => (
+          <button
+            type="button"
+            role="radio"
+            aria-checked={theme() === o.value}
+            class={theme() === o.value ? "on" : ""}
+            title={o.label}
+            onClick={() => setTheme(o.value)}
+          >
+            <span aria-hidden="true">{o.icon}</span>{props.compact ? "" : ` ${o.label}`}
+            <Show when={props.compact}><span class="sr-only">{o.label}</span></Show>
+          </button>
+        )}
+      </For>
+    </div>
   );
 }

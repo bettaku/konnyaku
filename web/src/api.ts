@@ -85,6 +85,10 @@ export const api = {
   me: () => request<User>("GET", "/me"),
   login: (email: string, password: string) => request<User>("POST", "/login", { email, password }),
   logout: () => request<void>("POST", "/logout"),
+  updateMe: (name: string) => request<User>("PATCH", "/me", { name }),
+  changePassword: (current_password: string, new_password: string) =>
+    request<{ signed_out: number }>("POST", "/me/password", { current_password, new_password }),
+  signOutOthers: () => request<{ signed_out: number }>("POST", "/me/sessions/sign-out-others"),
   users: () => request<User[]>("GET", "/users"),
   createUser: (u: { email: string; name: string; password: string; admin: boolean }) => request<User>("POST", "/users", u),
   locales: () => request<Locale[]>("GET", "/locales"),
