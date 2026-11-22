@@ -12,6 +12,14 @@ SELECT u.id,u.email,u.name,u.admin FROM users u JOIN sessions s ON s.user_id=u.i
 DELETE FROM sessions WHERE token_hash=$1;
 -- name: DeleteExpiredSessions :exec
 DELETE FROM sessions WHERE expires_at <= now();
+-- name: GetUserByID :one
+SELECT * FROM users WHERE id = $1;
+-- name: UpdateUserName :one
+UPDATE users SET name=$2 WHERE id=$1 RETURNING id,email,name,admin;
+-- name: UpdateUserPassword :exec
+UPDATE users SET password_hash=$2 WHERE id=$1;
+-- name: DeleteOtherSessions :execrows
+DELETE FROM sessions WHERE user_id=$1 AND token_hash <> $2;
 
 -- name: ListLocales :many
 SELECT * FROM locales ORDER BY code;
